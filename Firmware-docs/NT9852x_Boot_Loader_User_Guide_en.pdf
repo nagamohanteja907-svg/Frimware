@@ -1,0 +1,101 @@
+BOOT_loader
+
+Of course. Let's break this down step-by-step. This document is a **user guide** for a very specific piece of software called a **"Boot Loader"** for a family of microchips (NT9852x, NT98528) made by a company called Novatek.
+
+Think of it like the BIOS or firmware on your computer. When you press the power button, a tiny program (the bootloader) springs to life first. Its job is to:
+1.  Turn on and configure essential hardware (like the RAM).
+2.  Find the main operating system (like Windows or Linux) which is stored on a flash memory chip (like your computer's SSD).
+3.  Load that main OS and hand over control to it.
+
+This guide explains how to **build** (compile) your own version of this bootloader and how to **program** (install) it onto a Novatek chip.
+
+---
+
+### **Step 1: The Big Picture - What is this document for?**
+
+You are developing a product (e.g., a security camera, a car dashboard recorder) that uses a Novatek NT98520, NT98525, or NT98528 chip. This chip needs software to run.
+
+*   **The Main Firmware (F/W):** This is your actual product's software, with all its features (e.g., recording video, connecting to wifi). Its filename might be something like `FW98525A.BIN`.
+*   **The Boot Loader (Loader):** This is the small, crucial program that runs *first* when the chip powers on. It prepares the system and loads the main firmware. Its filename might be something like `LD98525A.BIN`.
+
+This PDF teaches you how to create and install the Loader.
+
+---
+
+### **Step 2: Key Concepts Explained with Examples**
+
+Let's translate the technical jargon into simple terms.
+
+1.  **Building the Loader:** This is the process of turning human-readable source code into a binary file (`LD98525A.BIN`) that the chip can understand. It's like compiling a program in C++ or Java.
+    *   **Example:** You wouldn't ship your .java files to someone to run a program; you ship the compiled .jar file. Similarly, you "build" the loader to get the final `.BIN` file.
+
+2.  **ModelConfig_XXX.txt:** This is the **MOST IMPORTANT FILE** for you. It's a configuration file where you tell the build system exactly what hardware *your specific product* has.
+    *   **Example:** Imagine you are building the same product but two models: a "Basic" model with 512MB of RAM and a "Pro" model with 1GB of RAM. You would have two different `ModelConfig_XXX.txt` files. One would say `SDRAM_SIZE = 4096` (512MB) and the other would say `SDRAM_SIZE = 8192` (1GB).
+
+3.  **Standalone vs. Combination Loader:**
+    *   **Standalone Loader:** A loader built for *one specific chip type* (e.g., only for the NT98525).
+    *   **Combination Loader (Combo):** A special loader that contains code for *multiple chip types* (e.g., both NT98525 and NT98528) in one file (`LDCOMBOA.bin`). This is useful for factories that manufacture products with different chips but want to use the same programming process.
+
+4.  **Programming / Updating:** This is the process of transferring the `.BIN` files from your computer onto the memory chips on your device's circuit board. The document lists several ways to do this:
+    *   **SD Card:** The easiest method. You copy the `.BIN` file to an SD card, insert it into your device, and turn it on. The existing boot code on the chip will detect the file and install it.
+    *   **USB:** A faster method used in mass production. You use a special "USB Download Tool" on your PC to send the files directly to the device over a USB cable.
+    *   **Ethernet:** Similar to USB, but over a network cable. You use a TFTP server on your PC to send the files.
+
+5.  **"A" vs. "T" in Filenames:**
+    *   `FW98525A.BIN`: The "A" stands for **Update**. If the loader finds this file on the SD card, it will **copy and install it permanently** onto the device's internal flash memory.
+    *   `FW98525T.BIN`: The "T" stands for **Temporary**. If the loader finds this file, it will **load it into RAM and run it once, but will NOT install it**. This is great for testing a new firmware version without overwriting the stable one on the device.
+
+---
+
+### **Step 3: The Step-by-Step Workflow (What you would actually do)**
+
+Here is the practical process of using this guide, from start to finish.
+
+**Goal: Build and install a loader for your new device, which has an NT98525 chip, 512MB of RAM, and a SPI NAND flash memory chip.**
+
+1.  **Get the Loader Source Code:** You have a folder from Novatek with all the directories mentioned on Page 4 (`ARC`, `Project`, `Tools`, etc.).
+
+2.  **Configure for Your Hardware (Page 23-32):** You navigate to the `Project/Model/` folder and find the key file: `ModelConfig_EMU_EVB.txt` (since your chip is a 52x series).
+    *   You open it and change the following lines:
+        *   `LDNAME = 98525` (So your loader will be named `LD98525A.bin`)
+        *   `SDRAM_SIZE = 4096` (Because 4096 Gb = 512 MB)
+        *   `STORAGEINT = NandSpi` (Because your internal storage is SPI NAND flash)
+        *   You leave most other settings (like `DRAM1_CLK = 933`) at their default values, as recommended.
+
+3.  **Build the Loader (Page 7-8):**
+    *   You open a command prompt (Linux) and navigate to the `MakeCommon` directory.
+    *   You type the command: **`make release`**
+    *   The build system runs. It reads your `ModelConfig_EMU_EVB.txt` file, compiles the code specifically for your hardware configuration, and produces the file `LD98525A.bin` in an `output` folder. You see a success message similar to the one on Page 8.
+
+4.  **Program the Loader onto the Device (Page 13-14):**
+    *   You format an SD card.
+    *   You copy the new `LD98525A.bin` file to the SD card.
+    *   You insert the SD card into your device and power it on.
+    *   The chip's built-in ROM code detects the `LD98525A.bin` file on the card and automatically programs it into the internal SPI NAND flash. You see the status messages on a UART debug console (like Tera Term), ending with "U-Boot ...", which means it was successful.
+
+5.  **Program your Main Firmware (Page 15-16):**
+    *   Now that the loader is installed, you can put your actual application firmware on the device.
+    *   You build your main firmware (this is a separate process not covered in this guide) to get a file like `FW98525A.BIN`.
+    *   You copy `FW98525A.BIN` to an SD card, insert it, and power on the device.
+    *   The loader *you just installed* now runs, sees the `FW98525A.BIN` file, and programs it into the correct sections of the SPI NAND flash. You see progress messages erasing and writing blocks of memory.
+
+6.  **Your Device is Ready:** On the next power cycle, the loader will find the main firmware in the internal storage, load it, and run it. Your product now functions.
+
+---
+
+### **Step 4: Understanding the Troubleshooting (Page 33-35)**
+
+The document includes common problems. The most important one is a **configuration mismatch**.
+
+*   **Problem (Page 34):** The error `E:d2 s not matched.` appears.
+*   **Cause:** The **Loader** was built with the setting `SDRAM2_SIZE = 0` (meaning no second RAM chip), but the **Main Firmware** was configured to expect a second RAM chip (`dram2 size = 0x20000000`).
+*   **Solution:** You must ensure the hardware configuration in your `ModelConfig_XXX.txt` file **exactly matches** the hardware configuration used to build your main firmware. They must agree on how much RAM there is, what type of flash is used, etc.
+
+### **Summary**
+
+This PDF is the instruction manual for creating the first software that runs on a Novatek chip. It's a bridge between the hardware and your main application. The process involves:
+1.  **Telling** the build system about your hardware (`ModelConfig_XXX.txt`).
+2.  **Compiling** the code into a `.BIN` file (`make release`).
+3.  **Installing** that file onto your device (via SD card, USB, or Ethernet).
+
+Getting the configuration right is critical, as a mistake will prevent your device from starting up correctly.
