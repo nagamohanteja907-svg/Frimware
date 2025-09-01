@@ -1,0 +1,128 @@
+BOOT_ROM
+
+Of course. Let's break down this document step-by-step. Think of it as the "instruction manual" for the very first piece of software that runs when you power on a Novatek NT9852x chip (like a security camera system-on-chip).
+
+This first software is called the **ROM Code** or **Boot ROM**. It's permanently hardwired into the chip itself and cannot be changed.
+
+---
+
+### **1. What is this document about? (The Big Picture)**
+
+Imagine you press the "ON" button on your device. The chip needs to know what to do next. It can't just magically start running the main operating system (like Linux). It needs a small program to initialize the basic hardware and load the next, larger program.
+
+This document explains how that **first program (the ROM Code)** works on Novatek's NT9852x family of chips. It tells you:
+*   Where it can look for the next program (e.g., from a flash memory chip, an SD card, over a network).
+*   What messages it prints out to a serial console (UART) so you can debug if something goes wrong.
+*   How it handles security features.
+
+---
+
+### **2. Key Concepts Explained Simply**
+
+*   **ROM Code:** The factory-built, read-only software inside the chip that runs immediately after power-on. Its only job is to find and load the next stage.
+*   **Loader / Bootloader:** This is the "next program" that the ROM Code is trying to find and start. It's usually stored on some external storage (like flash memory or an SD card). The loader's job is to set up more complex hardware (like DRAM memory) and then finally load the main operating system.
+*   **UART Message:** This is the debug output. By connecting a special USB-to-serial cable to the chip's debug pins, you can see these messages on your computer (using a tool like PuTTY or `screen`). These messages are your **primary way of knowing what's happening during boot.**
+*   **Boot Source:** The place where the ROM Code looks for the Loader. The chip has pins (boot straps) that you can set to a high or low voltage (e.g., by adding or removing resistors on the circuit board) to tell it where to look first.
+
+---
+
+### **3. Step-by-Step Walkthrough of the ROM Code's Job**
+
+Let's follow the flowchart from the document (Figure 1-1).
+
+**Step 1: Power On**
+You plug in the device or press the reset button. The chip starts and runs the ROM Code.
+
+**Step 2: Initialize UART**
+The very first thing it does is turn on the serial port (UART) so it can start sending you messages. The **very first character** you will always see is **`N`**. This means "Novatek ROM Code has started."
+
+**Step 3: Check Boot Source Pins**
+The ROM Code checks the state of its physical pins (e.g., `BS[3:0]`). The voltage on these pins acts like a switch telling it where to look first.
+
+*   **Example:** If the pins are set to `0x0`, it will first try to boot from **SPI NOR Flash** (a common, small flash memory chip soldered to the board). The UART will print `P`.
+*   If set to `0x1`, it tries to boot from **SD Card**. The UART will print `S1`.
+*   If set to `0x4`, it tries to boot from **Ethernet** (via TFTP). The UART will print `H`.
+
+*(The table on Page 4 is the dictionary for this: `P`=SPI NOR, `ND`=SPI NAND, `NE`=eMMC, `S1`=SD Card, `NHx`=Ethernet, `NU`=USB)*
+
+**Step 4: Try to Read the Loader**
+The ROM Code now tries to read data from the selected boot source.
+*   For a storage device (Flash, SD, eMMC), it looks for a Master Boot Record (MBR) and a Partition Boot Record (PBR) – similar to a PC looking for a bootable Windows partition.
+*   It then tries to read the first part of the "loader.bin" file.
+
+**Step 5: Success or Failure?**
+This is where the `K` codes come in. They are error codes.
+
+*   **SUCCESS:** If it finds the loader and it's valid, it prints a **`T`** and then **jumps to the loader**. The ROM Code's job is done!
+*   **FAILURE:** If anything goes wrong, it prints a `K` followed by a number and then moves to the next boot source in the sequence.
+    *   `K2` = Read MBR error (can't find the partition table)
+    *   `K3` = Read PBR error
+    *   `K9` = Checksum error (the loader file is corrupted or the wrong version)
+
+**Step 6: Auto-Boot Sequence (The Fallback Plan)**
+This is a crucial feature. The ROM Code has a default order to try boot sources if the first one fails. The sequence is:
+**Internal Storage (Flash/eMMC) → SD Card → Ethernet**
+
+**Example from Page 8:**
+Your board is set to boot from SPI NOR Flash (`BS[3:0] = 0x0`), but the flash chip is empty.
+1.  You see `N` (start).
+2.  You see `P` (trying SPI NOR)...
+3.  ...then `K9` (failed! Checksum error on empty flash).
+4.  It automatically moves to the next source: SD Card. You see `S1`.
+5.  But there's no SD card inserted! So it fails with `K2` (can't read the SD card's MBR).
+6.  It automatically moves to the final source: Ethernet. You see `HE` (trying Ethernet with embedded PHY).
+7.  It will now wait for a DHCP server and TFTP server on the network to provide a boot image. If none are found, it will eventually halt.
+
+---
+
+### **4. Understanding the UART Messages - A Practical Guide**
+
+This is the most useful part for debugging. Let's decipher the examples from the document.
+
+**Example 1: A Successful SD Card Boot (Page 7)**
+```
+NS1Tdma1 ini_ver 0x00000001
+Non S3
+zdma ok
+...
+UNZOK
+loader Start ...
+```
+*   `N`: ROM started.
+*   `S1`: Trying to boot from SD Card.
+*   `T`: **Success!** Found and loaded the loader.bin from the SD card. Jumping to it.
+*   `dma1 ini_ver...`: This is now the **Loader** talking, not the ROM Code. It's initializing.
+*   `UNZOK`: The loader has unpacked itself successfully.
+*   `loader Start...`: The main part of the loader is running. Next, it will set up DRAM and load the OS.
+
+**Example 2: A Failed Boot & The Auto-Sequence (Page 9)**
+This looks messy, but we can decode it:
+`NDI>XSRK9S1>XSRT...` then it hangs.
+
+*   `N`: ROM started.
+*   `D`: First boot source was SPI NAND flash.
+*   `I`, `>`: Internal clock messages (ignore for debugging).
+*   `X`: Secure Boot is enabled.
+*   `S`: Data is encrypted.
+*   `R`: Using RSA signature method.
+*   `K9`: **FAILED.** Checksum error on the loader in the NAND flash.
+*   `S1`: Auto-boot sequence moves to the next source: SD Card.
+*   `>`: Ignore.
+*   `XSR`: Again, secure boot settings.
+*   `T`: **SUCCESS!** It found a valid loader on the SD card this time!
+*   `dma1 ini_ver...`: It jumps to the loader...
+*   ...but then it hangs at `Non S3`. This is a **loader problem**, not a ROM Code problem. The loader is failing to change the CPU frequency correctly. The ROM code did its job perfectly (it found `T`), but the next stage is broken.
+
+**Example 3: Troubleshooting (Page 8)**
+*   **"NxxK9" or "NxxK1"**: The ROM code loaded the loader (`T` never happened), but the loader itself crashed immediately. This is almost always a **DRAM configuration issue**. The loader is trying to set up the RAM chips on your board but has the wrong settings (frequency, timings) for your specific hardware, causing a crash.
+*   **"NS1K2"**: The ROM code was told to boot from SD (`S1`) but got a `K2` (Read MBR error). This means it can't even talk to the SD card. Check: Is the card inserted? Is the socket damaged? Are the data lines connected correctly on the PCB?
+
+### **Summary**
+
+This PDF is the guide to the chip's very first steps. It:
+1.  **Wakes up** and says "`N`".
+2.  **Looks** at its hardware pins to see where it should **look first** (`P`, `S1`, `ND`, etc.).
+3.  **Tries to load** the next program from that location.
+4.  **Reports Success (`T`)** and hands over control, OR...
+5.  **Reports Failure (`K#`)** and moves down its fallback list (Flash -> SD -> Network).
+6.  **You**, the developer, use these simple letters on a serial console to figure out exactly where in this process your device is failing, which tells you exactly what to fix: the boot pin settings, the solder on the SD socket, the content of the flash memory, or the configuration of the loader program itself.
