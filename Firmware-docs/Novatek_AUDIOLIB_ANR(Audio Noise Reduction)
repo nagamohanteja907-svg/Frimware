@@ -1,0 +1,126 @@
+Of course. This is an excellent question. Let's break down this Novatek application note step-by-step, from basic concepts to the specific code examples. Think of this as a guided tour.
+
+### **High-Level Summary: What is This Document About?**
+
+This document describes a software library (a set of pre-written functions) provided by Novatek for their NTK System-on-a-Chip (SoC) products. This library's job is to perform **Audio Noise Reduction (ANR)**.
+
+In simple terms: If you are building a device with a Novatek chip that records audio (like a voice recorder, a video camera, a baby monitor, etc.), the recorded sound will often have unwanted background noise (like the hum of an air conditioner, wind, or a constant electrical buzz). This ANR library is designed to **filter out that noise** while trying to **keep the desired sounds** (like a person's voice) as clear as possible.
+
+---
+
+### **Step-by-Step Breakdown**
+
+#### **1. Core Features (Page 3)**
+
+The library can do several important things:
+*   **Suppress background noise:** Removes constant, messy noise.
+*   **Adapt to changing noise levels:** If you move from a quiet room to a noisy street, it can adjust itself.
+*   **Suppress consistent tones:** It can target and remove annoying constant tones (like a 50/60Hz electrical hum or a whine from a machine).
+*   **Works with common audio formats:** It supports standard audio sample rates (8000 Hz to 48000 Hz) for both mono (one microphone) and stereo (two microphones) recordings.
+
+#### **2. How It Works: The Block Diagram (Page 3)**
+
+The diagram shows the internal process. You don't need to understand the deep math, but the general flow is important:
+1.  The raw audio signal comes in.
+2.  It goes through **Noise Detection** and **Tone Detection** to identify what parts are unwanted.
+3.  The algorithm performs a **Fast Fourier Transform (FFT)**. This is a key step: it converts the audio from the *time domain* (a waveform) into the *frequency domain*. Think of it like looking at an audio equalizer display—it lets the algorithm see which specific frequencies are loud or quiet.
+4.  In the frequency domain, it's much easier to **suppress (reduce the volume of)** the frequencies identified as noise.
+5.  Finally, an **Inverse FFT (IFFT)** converts the cleaned-up audio back from the frequency domain into a normal waveform that you can play through a speaker or save to a file.
+
+#### **3. Critical Configuration: Block Size (Page 4)**
+
+This is one of the most important technical details. The ANR algorithm doesn't process audio sample-by-sample; it processes it in **chunks (or "blocks")**.
+
+*   **Why?** The FFT step needs a block of data to work on.
+*   **The Rule:** The size of these chunks **must follow a specific formula** based on your audio's sample rate and number of channels (mono/stereo). The table on Page 4 provides this formula.
+*   **Example:** Let's say you are recording stereo audio at 44.1 kHz.
+    *   From the table, the FFT Frame Size is 1024.
+    *   The formula for the block size is `(1024 + (512 * n)) * c`
+        *   `n` can be 0, 1, 2, 3... (it lets you use larger blocks for efficiency).
+        *   `c` is the number of channels (2 for stereo).
+    *   The **minimum block size** (`n=0`) is `(1024 + 0) * 2 = 2048`.
+    *   This means you must feed the ANR function audio data in chunks of 2048 samples. Since it's stereo and each sample is 16-bit, this chunk would be `2048 samples * 2 channels * 2 bytes = 8192 bytes` of data.
+
+**If you don't follow this rule, the ANR will not work correctly.**
+
+#### **4. Latency: There's a Delay (Page 4 & 5)**
+
+A crucial side-effect of this block-based processing is **latency** (delay). The algorithm needs to "look ahead" a bit to understand the noise, which causes a delay in the output. It also loses a bit of audio at the very beginning as it fills its internal buffers.
+
+*   **Signal Delay:** The time between your input audio entering and the processed audio coming out.
+*   **Signal Lost:** The amount of audio at the very start that is not output.
+*   **This is normal.** The table on Page 5 tells you exactly how much delay to expect for each sample rate. For example, at 48 kHz, the total delay is 139 ms (a little under 1/7th of a second). This is acceptable for recording but might be a problem for real-time two-way communication like a phone call.
+
+#### **5. How to Use It: The API (Application Programming Interface) (Pages 5-9)**
+
+The API is the set of functions you call to use the library. The document shows three main steps:
+
+##### **Step 5.1: Configuration (`config_anr_test` function)**
+This is where you set up the ANR engine for your specific needs.
+*   You tell it the block size, sample rate, and channels.
+*   **User Configurations (You can change these):**
+    *   `nr_db`: How strong the noise reduction is (e.g., `15` means reduce noise by 15 decibels). Higher values are stronger but can distort the desired audio.
+    *   `hp_cutoff_freq`: A high-pass filter cutoff. It removes very low-frequency rumbles (below 70 Hz in the example) that are usually not voice.
+*   **Professional Configurations (Do NOT change these):** These are internal tuning parameters. The function automatically sets them based on the sample rate.
+
+**A Key Tip from Novatek:** The commented lines `// Replace the following 4 lines...` point to a special function `AUD_ANR_Detect()`. You can run this first with a sample of your *actual background noise* (e.g., 5 seconds of silence in the room). It will analyze that noise and print out values for `default_spec`, `max_bias`, etc. Using these measured values instead of the placeholder zeros will make the ANR work much better for your specific environment.
+
+##### **Step 5.2: Initialization (`audlib_anr_pre_init` and `audlib_anr_init`)**
+Before you can use any library, you must initialize it.
+1.  **Pre-Init:** You call `audlib_anr_pre_init(&gstreamANR)`. This doesn't do the init yet, but it calculates how much memory the ANR will need and stores it in `gstreamANR.memory_needed`.
+2.  **Allocate Memory:** You then allocate a block of memory of that exact size (`malloc`).
+3.  **Init:** You call `audlib_anr_init(&anr_handle, &gstreamANR)`, giving it the config and the memory block you allocated. This sets everything up and gives you back an `anr_handle`—a pointer you use to refer to this specific ANR instance in the next step.
+
+##### **Step 5.3: Processing (`audlib_anr_run`)**
+This is the main function you call in a loop, once for every block of audio data.
+*   You point it to your `anr_handle`.
+*   You point it to your **input buffer** (where your raw, noisy audio data is stored).
+*   You point it to your **output buffer** (an empty space where the library will write the cleaned-up audio).
+*   The function processes one block of data. You then move your pointers to the next block of input data and the next empty space in the output buffer, and call the function again. You repeat this until all audio is processed.
+
+---
+
+### **Putting It All Together: A Practical Example**
+
+Let's imagine you are writing firmware for a Novatek-based dash cam that records stereo audio at 16 kHz.
+
+**1. Setup:**
+*   Sample Rate: `16000`
+*   Channels: `2` (Stereo)
+*   From the Block Size Table: Minimum block size is `512 (mono) * 2 = 1024` samples. You choose `n=0`, so your `blk_size` = `1024`.
+
+**2. Code Flow:**
+```c
+#include "audlib_anr.h" // Include the library header
+
+// 1. CONFIGURE
+struct ANR_CONFIG my_anr_config; // Create a config struct
+config_anr_test(1024, 16000, 2, &my_anr_config); // Fill it with parameters
+
+// 2. INITIALIZE
+void *anr_memory_buffer;
+int anr_memory_size;
+void *anr_handle; // This will be our handle to the ANR engine
+
+anr_memory_size = audlib_anr_pre_init(&my_anr_config); // Find out how much RAM we need
+anr_memory_buffer = malloc(anr_memory_size); // Allocate the RAM
+my_anr_config.p_mem_buffer = anr_memory_buffer; // Tell the config where the RAM is
+
+// Now actually initialize the engine
+int init_result = audlib_anr_init(&anr_handle, &my_anr_config);
+if(init_result != 0) {
+    printf("Error initializing ANR! Error code: %d\n", init_result);
+    // Handle the error
+}
+
+// 3. PROCESS (in your main recording loop)
+// Assume we have arrays: input_buffer[1024] and output_buffer[1024]
+// You have a function get_audio_block() that gets 1024 samples of raw audio
+
+while(recording_is_active) {
+    get_audio_block(input_buffer); // Fill input_buffer with 1024 new samples
+
+    // This is the magic function that cleans the audio
+    audlib_anr_run(anr_handle, (INT16 *)input_buffer, (INT16 *)output_buffer);
+
+    save_audio_to_file(output
