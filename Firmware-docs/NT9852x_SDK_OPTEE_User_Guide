@@ -1,0 +1,134 @@
+Of course. This is a complex topic, but I will break it down for you step-by-step, from the fundamental concepts to the specific instructions in the document. Think of this as a beginner's guide to understanding and working with the NT98520 SDK and OPTEE.
+
+### **Big Picture: What is This All About?**
+
+This document is a guide for programmers working on a chip called the **Novatek NT98520**. This chip has a special security feature built into its hardware (by ARM, the company that designs the chip's core) called **TrustZone**.
+
+*   **The Problem:** You have a device (like a security camera) running a complex operating system like Linux. Linux is powerful but also big and can have vulnerabilities. You don't want a hacker who gets into Linux to also be able to access critical secrets like encryption keys, digital certificates, or biometric data.
+*   **The Solution (TrustZone):** ARM's TrustZone technology divides the chip's world into two separate, isolated zones:
+    1.  **Normal World:** This is where your main operating system (like Linux or Android) runs. It's considered less secure.
+    2.  **Secure World:** This is a highly locked-down environment. Only trusted, audited code can run here. It has direct, exclusive access to certain security-critical hardware.
+
+The two worlds are strictly separated. Code in the Normal World *cannot* access the memory or hardware of the Secure World. They can only communicate through a very controlled, guarded doorway.
+
+**OPTEE (Open Portable Trusted Execution Environment)** is the software that runs in the **Secure World**. It's the "boss" of the secure side. This document explains how to build, configure, and program OPTEE on Novatek's chip.
+
+---
+
+### **Step-by-Step Breakdown of the PDF**
+
+Let's go through each section of the document.
+
+#### **1. Introduction (Pages 3-6)**
+
+*   **1.1 ARM secure world:** This introduces the core concept of TrustZone, as explained above. The "Monitor Mode" is the special gatekeeper that switches the CPU between the Normal and Secure worlds.
+*   **1.2 Software architecture:** This shows how the software stacks up on the hardware.
+    *   **Normal World:** Your application (`OPTEE client`) talks to a Linux driver (`OPTEE linux driver`), which then uses the `SMC` instruction to "call" into the Secure World.
+    *   **Secure World:** The `OPTEE dispatcher` (in Monitor Mode) receives the call and passes it to the `OPTEE kernel`. The kernel can then service the request itself or pass it to a trusted application (`NVT services`), like a crypto service.
+*   **1.3 OPTEE codetree:** This shows you where the source code is located in the SDK.
+    *   `optee_os/`: The source code for the OPTEE kernel itself.
+    *   `optee_client/`: Contains tools, tests, and examples that run in the *Normal World* (Linux) to communicate with the Secure World.
+
+#### **2. Compile (Pages 7-8)**
+
+This section is straightforward: it gives you the commands to build the software.
+*   `$ make optee_os`: Compiles the Secure World OS kernel. Output is `tee-pager.bin`.
+*   `$ make optee_client`: Compiles the tools and examples for the Normal World.
+*   **LOG level:** You can control how much debug output the OPTEE kernel produces. Level 3 (Error + Warning + Debug) is usually a good starting point for development.
+*   **OPTEE Example:** They point you to an example crypto application (`nvt_crypto_ta.c`). This is a **great place to start learning!** A Trusted Application (TA) runs in the Secure World.
+
+#### **3. Boot (Pages 9-11)**
+
+This describes the order in which software loads when the chip powers on.
+1.  **Loader:** The first thing that runs. It's like the BIOS on a PC. It copies the OPTEE image and the U-Boot (a bootloader) image into the correct places in memory.
+2.  **OPTEE:** The Loader starts OPTEE. OPTEE initializes the secure hardware and then...
+3.  **Jumps to Normal World:** OPTEE hands over control to U-Boot, which is now running in the Normal World.
+4.  **U-Boot:** loads the Linux kernel.
+5.  **Linux:** finally boots up.
+
+The log snippets show you what this process looks like on the console.
+
+#### **4. Memory Config (Pages 12-15)**
+
+This is **crucial**. Because the worlds are separate, you must explicitly define which parts of the memory (RAM) belong to whom. You can't change this on the fly.
+
+*   **TZDRAM (TrustZone DRAM):** This is the memory for the Secure World.
+    *   It holds the `OPTEE OS` kernel code and data.
+    *   It also holds `TA_RAM`, the memory where Trusted Applications (like our crypto example) are loaded and run.
+*   **NS_SHM (Non-Secure Shared Memory):** This is a special area of memory that *both* worlds can access. It's used to pass data back and forth safely. For example, a Normal World app can put encrypted data here and then ask the Secure World to decrypt it.
+
+**How to configure it?** You must change it in **two places** so they match:
+1.  **In OPTEE OS:** Modify `optee_os/core/arch/arm/plat-novatek/conf.mk` to set the base addresses and sizes for `TZDRAM` and `SHMEM`.
+2.  **In the Device Tree:** The Device Tree is a file that tells Linux about the hardware layout. You must edit `nvt-na51055-mem-tbl.dtsi` to tell Linux to *avoid* using these memory regions because they are reserved for OPTEE (`no-map`).
+
+Getting this wrong will cause the system to crash.
+
+#### **5. SMC Function Definition (Pages 16-19) - THE MOST IMPORTANT PART**
+
+This is the core of how the two worlds communicate. The *only* way for the Normal World to ask the Secure World to do something is by executing an **SMC (Secure Monitor Call)** instruction.
+
+*   The SMC instruction is like a guarded phone call. The Normal World "calls" the Secure World.
+*   The call includes a **Function ID Number** which is like a phone extension. It tells OPTEE *what* you want it to do (e.g., "decrypt this", "sign that").
+*   The document explains the complex structure of this number (Fast vs. Slow call, 32-bit vs. 64-bit, who owns the call).
+
+**How to create your own SMC command (Your "Hello World"):**
+
+The document guides you through creating a custom (OEM) command.
+
+1.  **Define the Function ID:** In `custom_smc_id.h`, you create a new unique number.
+    ```c
+    // Choose a module ID and a function ID within that module
+    #define SMC_MY_COOL_FUNCTION_ID OEM_FAST_FUNC_GEN(CUSTOM_TYPE, 0, 1)
+    ```
+    This creates a fast, atomic call for custom type, module 0, function 1.
+
+2.  **Handle the Call in Secure World:** In `custom_smc.c`, you write the function that will run when your SMC is called.
+    ```c
+    uint32_t custom_smc_fast(struct thread_smc_args *args) {
+        switch (args->a0) { // a0 contains the Function ID
+            case SMC_MY_COOL_FUNCTION_ID:
+                // DO YOUR SECURE WORK HERE!
+                // For example, print a message from the secure world.
+                // args->a1, a2... can contain arguments from the Normal World.
+                return MY_SUCCESS_CODE; // Return a result
+            break;
+            // ... other cases ...
+        }
+    }
+    ```
+
+3.  **Call it from Normal World:** From a Linux application or driver, you would use a library that wraps the SMC call. It would look something like this (pseudo-code):
+    ```c
+    // This is in your Normal World C code
+    int result = tee_client_invoke_command(
+        session_context,    // A connection to the Secure World
+        SMC_MY_COOL_FUNCTION_ID, // The ID we defined
+        input_param,        // Optional data to send
+        &output_param       // Optional result to get back
+    );
+    ```
+
+#### **6. Interrupt (Pages 20-21)**
+
+Interrupts are signals from hardware (e.g., a button press, a crypto engine finishing a job). TrustZone also separates interrupts into Secure and Non-Secure.
+
+*   **Secure Interrupts (FIQ):** For hardware that only the Secure World should manage (e.g., a true random number generator). These are handled directly by OPTEE.
+*   **Non-Secure Interrupts (IRQ):** For everything else (e.g., network traffic, user input). Handled by Linux.
+
+The document shows you how to register a handler for a **Secure Interrupt** in OPTEE OS. You define the interrupt number, create a handler function, and register it so OPTEE knows to call your function when that hardware interrupt occurs.
+
+---
+
+### **How to Start Working With It: A Practical Plan**
+
+1.  **Set Up the SDK:** Make sure you have the Novatek SDK built and can compile a basic firmware image for your board.
+2.  **Run the Default:** Flash the default image and make sure it boots to a Linux prompt. This proves your hardware and basic toolchain work.
+3.  **Explore the Example:** Look at the provided crypto example (`nvt_crypto_ta.c`). Don't modify it yet, just read the code.
+    *   Find the TA code (runs in Secure World).
+    *   Find the Client code (runs in Normal World).
+    *   Try to find the SMC Function IDs that connect them.
+4.  **Make a Small Change:** Change a string in the `nvt_crypto_ta.c` example, recompile (`make optee_os`), rebuild your firmware, and flash it. See if your change appears. This tests your build and modification process.
+5.  **Create Your Own SMC Command:** Follow the steps in Section 5 to create a simple new SMC command that just returns a hard-coded value. Call it from a simple C test program in Linux. This is your "Hello World" for Secure World programming.
+6.  **Experiment with Memory:** Create a simple command that uses the shared memory (NS_SHM) to receive a string from the Normal World and send a modified string back.
+
+This document is your map. Start with small, simple steps to verify your understanding of each concept before moving on to more complex security applications.
