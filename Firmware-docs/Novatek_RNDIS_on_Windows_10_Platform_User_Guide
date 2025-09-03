@@ -1,0 +1,103 @@
+Of course. Let's break down this user guide step-by-step in simple, clear English.
+
+### **What is this document about?**
+
+This is a guide from a company called **Novatek** for their **NT9852X** computer chip (like a small brain for devices). The guide explains how to make a Windows 10 computer talk to a device using this Novatek chip **over a simple USB cable**, as if they were connected through a **virtual Ethernet network cable**.
+
+The technology that makes this possible is called **RNDIS** (Remote Network Driver Interface Specification).
+
+**Simple Analogy:** Imagine you want to connect your laptop to a smart camera (which uses the Novatek chip) to configure it. You don't have a network cable or a Wi-Fi router. RNDIS lets you use the USB cable you'd normally use for charging to create a tiny, private, direct network between just your laptop and the camera.
+
+---
+
+### **Part 1: Understanding RNDIS**
+
+#### **1.1 Introduction (Page 3)**
+*   **What it says:** RNDIS is a communication protocol (a set of rules). It's a Microsoft technology that lets a device pretend to be a network adapter over a USB connection. The computer sees it as a standard Ethernet connection.
+*   **In simple terms:** It's a translator. The Novatek device speaks "USB," but Windows understands "Ethernet." RNDIS translates between these two languages. When you plug in the USB cable, Windows will see a new "Ethernet Adapter" or "Network Connection" appear, which is actually the virtual connection to your device.
+
+---
+
+### **Part 2: Setting up the Novatek Device (The "Server" Side)**
+
+This part is for the person who is building the software that runs *on the Novatek chip itself* (e.g., the firmware for a camera). You might not need to do this if you already have a pre-built device.
+
+#### **1.2 Linux menuconfig (Page 3)**
+The software on the Novatek chip often runs a version of Linux. To enable RNDIS, the person building that software must "turn on" the right features before compiling the operating system. This is done through a tool called `menuconfig`.
+
+*   **What it means:** The guide shows the exact menu options to navigate to and enable (`<M>` means build as a loadable module, `[*]` means build directly into the kernel).
+*   **Key options to enable:**
+    *   The correct USB controller for the specific Novatek chip (FOTG200 for NT98520/525, FOTG210 for NT98528).
+    *   The "Ethernet Gadget" functionality.
+    *   **RNDIS support** (This is the most critical one).
+
+#### **1.3 Setup Step (Page 4)**
+Once the Linux software is running on the Novatek device, you need to load the specific software drivers and configure the network. This is done by typing commands into the device's terminal.
+
+**Example Commands:**
+*   **For NT98520/525 chips:**
+    ```bash
+    $ modprobe fotg200-udc  # Loads the driver for the USB hardware
+    $ modprobe g_ether      # Loads the generic Ethernet gadget driver (which includes RNDIS)
+    ```
+*   **For NT98528 chip:**
+    ```bash
+    $ modprobe fotg210-udc  # Loads the driver for the USB hardware
+    $ modprobe g_ether      # Loads the generic Ethernet gadget driver
+    ```
+*   **For all chips, set an IP address:**
+    ```bash
+    $ ifconfig usb0 192.168.1.10 netmask 255.255.255.0 up
+    ```
+    *   `usb0` is the name of the virtual network interface on the device.
+    *   `192.168.1.10` is the IP address assigned to the **device**. You will need to set your Windows PC to an IP address in the same range (e.g., `192.168.1.40`).
+
+---
+
+### **Part 3: Setting up the Windows 10 PC (The "Client" Side)**
+
+This is the part you will most likely need to do. Windows does not have built-in drivers for this specific "Novatek RNDIS" device, so you must manually install them. A security feature called "Driver Signature Enforcement" blocks this, so we have to disable it temporarily.
+
+#### **1.4 Windows RNDIS driver install (Pages 5-13)**
+
+**Step 1 (Page 5):** Connect your Novatek device (EVB - Evaluation Board) to the Windows PC using the USB cable.
+
+**Steps 2-7 (Pages 5-8): Disable Driver Signature Enforcement**
+This is a security feature in Windows that only allows officially signed drivers to be installed. Since the Novatek driver isn't signed by Microsoft, we must disable this check.
+1.  Hold the **Shift** key and click **Restart** on your Windows Start Menu.
+2.  After restarting, go to **Troubleshoot** -> **Advanced options** -> **Startup Settings** -> **Restart**.
+3.  After the next restart, a list of options appears. Press **F7** on your keyboard to select **"Disable driver signature enforcement"**. Windows will now boot normally.
+
+**Steps 8-16 (Pages 9-13): Install the Driver Manually**
+Now that Windows will allow unsigned drivers, you can install the one provided by Novatek.
+1.  Open **Device Manager**. You will see an unknown device, likely under "Other devices" or "Ports (COM & LPT)" with a yellow warning icon. It might be called "USB Serial Device" or something similar.
+2.  Right-click on it and select **"Update driver"**.
+3.  Choose **"Browse my computer for drivers"**.
+4.  Choose **"Let me pick from a list of available drivers on my computer"**.
+5.  Click the **"Have Disk..."** button.
+6.  In the "Have Disk" window, click **"Browse..."** and navigate to the folder where the Novatek driver files are stored. You need the `Linux_RNDIS_6.0_win10.inf` file.
+7.  Select the `.inf` file and click **Open**, then **OK**.
+8.  From the list, you should now see **"Remote NDIS6 based Device"**. Select it and click **Next**.
+9.  Windows will show a scary warning saying the driver is unsigned. Since you disabled signature enforcement, you can click **"Install this driver software anyway"**.
+10. The driver will install. You may be prompted to restart your PC to complete the installation.
+
+---
+
+### **What to do after installation (The Final Setup)**
+
+Once the driver is installed:
+1.  Go to your Windows **Network Connections** control panel.
+2.  You should see a new connection (e.g., "Ethernet 2" or "Remote NDIS based Internet Sharing Device").
+3.  You need to assign a **static IP address** to this connection on your PC that is in the same subnet as the device.
+    *   **Device IP (from Page 4):** `192.168.1.10`
+    *   **PC IP (example):** `192.168.1.40`
+    *   **Subnet Mask:** `255.255.255.0`
+4.  To set this on Windows:
+    *   Right-click the new network connection -> **Properties**.
+    *   Select "Internet Protocol Version 4 (TCP/IPv4)" -> **Properties**.
+    *   Select "Use the following IP address" and enter the details.
+
+**Now you are done!** You should be able to ping the device from your Windows PC to test the connection.
+*   Open Command Prompt and type: `ping 192.168.1.10`
+
+If you get replies, your virtual USB Ethernet network is working. You can now use this connection to transfer files, configure the device, or debug it using other network tools.
