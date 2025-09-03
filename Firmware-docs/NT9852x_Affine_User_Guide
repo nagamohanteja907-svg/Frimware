@@ -1,0 +1,181 @@
+NT9852x_Affine_User_Guide
+
+Of course. Let's break this down step-by-step. This document is a guide for using a specific piece of hardware inside a Novatek chip (the NT9852x series) called the **"Affine" unit**.
+
+Think of this hardware as a super-fast, dedicated artist that can take an image and **warp, rotate, scale, and skew it** in one single, smooth operation.
+
+---
+
+### **1. What is "Affine" and What Does This Hardware Do?**
+
+An **affine transformation** is a mathematical operation that can do four things to an image:
+1.  **Scale:** Make it larger or smaller.
+2.  **Rotate:** Spin it around a point.
+3.  **Shear/Skew:** Slant it (like leaning a rectangle into a parallelogram).
+4.  **Translate:** Move it around.
+
+This Novatek chip has a dedicated piece of hardware (the "Affine HW" or "Affine engine") that performs these transformations very efficiently. It's much faster than doing the same math on the main computer brain (CPU) of the chip.
+
+**Key Features (from Page 4):**
+*   **Rotation:** Only between **-15 to +15 degrees**. (It's not for doing full 90° spins).
+*   **Scaling:**
+    *   **Horizontal:** You can make the image much wider (up to 16x) or slightly narrower (down to ~88% of its size, 1/1.13).
+    *   **Vertical:** You can make the image slightly taller (up to 1.14x) or significantly shorter (down to ~64% of its size, 1/1.57). *This is an important limit!*
+*   **Shearing:** The slanting effect is limited to specific small values.
+*   **Image Formats:** It works on standard 8-bit grayscale images and special 16-bit "UV packed" images (which are part of color video signals like YUV422/YUV411).
+*   **Max Size:** It can handle huge images, up to **8192 x 8192 pixels**.
+
+---
+
+### **2. How Does It Work? The Magic (and Math)**
+
+The core idea is a math formula. For every pixel in your *destination* (output) image, the hardware calculates where it *should* come from in the *source* (input) image.
+
+**The Formula (from Page 4, simplified):**
+For a destination pixel at `(X_dst, Y_dst)`, find the source pixel at `(X_src, Y_src)` using:
+*   `X_src = a * X_dst + b * Y_dst + c`
+*   `Y_src = d * X_dst + e * Y_dst + f`
+
+The six numbers `a, b, c, d, e, f` (the **coefficients**) define the exact transformation (rotation, scale, etc.). For a simple rotation by angle `θ` (theta), these coefficients would be:
+*   `a = cos(θ)`
+*   `b = -sin(θ)`
+*   `d = sin(θ)`
+*   `e = cos(θ)`
+*   `c, f = 0` (for no translation)
+
+**Bilinear Interpolation (Page 5):**
+Since `X_src` and `Y_src` calculated from the formula are almost never whole numbers (e.g., 100.7, 255.3), the hardware doesn't just grab the nearest pixel. That would look blocky. Instead, it performs **bilinear interpolation**.
+It takes the **four surrounding pixels** (Q11, Q12, Q21, Q22), calculates a weighted average based on how close the calculated point is to each of them, and produces a smooth, high-quality output pixel (Q). This is why the output looks smooth even when rotating or scaling.
+
+---
+
+### **3. How Do I Use It? The Code Flow**
+
+The document provides a software library (API) to control this hardware. You primarily need just **three functions**:
+
+1.  `kdrv_affine_open()`: "Hey hardware, wake up and get ready. I'm going to give you a job."
+2.  `kdrv_affine_trigger()`: "Here is the job. Do it!" This is the most important function.
+3.  `kdrv_affine_close()`: "Okay, you're done. Go back to sleep."
+
+#### **The "Job" Description (`KDRV_AFFINE_TRIGGER_PARAM`)**
+
+When you call `kdrv_affine_trigger()`, you must give it a detailed instruction manual. This is a structure that contains:
+
+1.  **`format`**: Is the image 8-bit (`AFFINE_FORMAT_FORMAT_8BITS`) or 16-bit UV packed (`AFFINE_FORMAT_FORMAT_16BITS_UVPACK`)?
+2.  **`uiWidth` / `uiHeight`**: The size of the *destination* image you want to create.
+3.  **`pSrcImg`**: A pointer to a struct describing the *source* image.
+    *   `uiImageAddr`: The memory address where the image data starts.
+    *   `uiLineOffset`: The length of one row of the image in memory (the "stride"). This is often the image's width.
+4.  **`pDstImg`**: A pointer to a struct describing the *destination* image (same fields as source).
+5.  **`pCoefficient`**: A pointer to a struct containing the six magic numbers **`a, b, c, d, e, f`** that define your transformation.
+
+---
+
+### **4. Practical Examples**
+
+#### **Example 1: Rotating an 8-bit Grayscale Image by 3 Degrees**
+
+This code follows the flow and structure described above.
+
+```c
+#include "kdrv_affine.h" // Include the necessary library
+
+// 1. Declare your structures
+KDRV_AFFINE_TRIGGER_PARAM request = {0}; // The main "job" request
+AFFINE_IMAGE srcImg = {0};               // Description of source image
+AFFINE_IMAGE dstImg = {0};               // Description of destination image
+AFFINE_COEFF coeffs = {0};               // The 6 transformation coefficients
+
+// 2. Fill out the main request
+request.format = AFFINE_FORMAT_FORMAT_8BITS; // We're using an 8-bit image
+request.uiWidth = 640;   // Destination image will be 640px wide
+request.uiHeight = 480;  // ...and 480px tall
+
+// 3. Describe the source image (let's say it's at address 0x80200000)
+srcImg.uiImageAddr = 0x80200000;
+srcImg.uiLineOffset = 640; // Each line is 640 bytes long
+
+// 4. Describe the destination image (we'll put it at 0x80300000)
+dstImg.uiImageAddr = 0x80300000;
+dstImg.uiLineOffset = 800; // We might want a wider stride for the destination
+
+// 5. Link these image descriptions to the main request
+request.pSrcImg = &srcImg;
+request.pDstImg = &dstImg;
+
+// 6. Calculate the coefficients for a 3-degree rotation
+// a = cos(3°) = 0.9986295
+// b = -sin(3°) = -0.052335956
+// d = sin(3°) = 0.052335956
+// e = cos(3°) = 0.9986295
+// c & f are 0 because we're not moving the image around, just rotating it
+coeffs.fCoeffA = 0.9986295;
+coeffs.fCoeffB = -0.052335956;
+coeffs.fCoeffC = 0.0;
+coeffs.fCoeffD = 0.052335956;
+coeffs.fCoeffE = 0.9986295;
+coeffs.fCoeffF = 0.0;
+
+// 7. Link the coefficients to the main request
+request.pCoefficient = &coeffs;
+
+// 8. EXECUTE!
+kdrv_affine_open(KDRV_CHIP0, KDRV_GFX2D_AFFINE);           // Power on the engine
+kdrv_affine_trigger(KDRV_GFX2D_AFFINE, &request, NULL, NULL); // Do the transformation!
+kdrv_affine_close(KDRV_CHIP0, KDRV_GFX2D_AFFINE);          // Power down the engine
+```
+
+#### **Example 2: Transforming a Color (UV) Plane**
+
+In video, color information (UV) is often stored at a lower resolution than the brightness (Y). A common format is YUV422, where the UV data is half the horizontal resolution of the Y data.
+
+If you rotated the Y plane by 3°, you must apply a **different transformation** to the UV plane to make everything line up correctly.
+
+**The Rule for YUV422 (from Page 9):**
+If coefficients for the Y plane are `[a, b, c, d, e, f]`, then for the UV plane, they must be adjusted to: `[a, b/2, c/2, 2*d, e, f]`.
+
+So, building on the previous example, the code for the UV plane would be almost identical, *except* for the coefficients:
+
+```c
+    // ... (The setup for srcImg, dstImg, width, height is the same) ...
+    request.format = AFFINE_FORMAT_FORMAT_16BITS_UVPACK; // <- Change the format!
+
+    // Calculate ADJUSTED coefficients for YUV422 UV plane
+    // a remains the same: cos(3°) = 0.9986295
+    // b is halved: -sin(3°)/2 = -0.052335956/2 = -0.026167978
+    // c is halved: 0 / 2 = 0
+    // d is doubled: 2 * sin(3°) = 2 * 0.052335956 = 0.104671912
+    // e remains the same: cos(3°) = 0.9986295
+    // f remains the same: 0
+    coeffs.fCoeffA = 0.9986295;
+    coeffs.fCoeffB = -0.026167978;
+    coeffs.fCoeffC = 0.0;
+    coeffs.fCoeffD = 0.104671912;
+    coeffs.fCoeffE = 0.9986295;
+    coeffs.fCoeffF = 0.0;
+    // ... (rest of the code is the same) ...
+```
+
+---
+
+### **5. Important Limitations & Troubleshooting**
+
+*   **Memory Alignment:** The hardware is picky about how images are stored in memory.
+    *   Image **width must be a multiple of 32 pixels**.
+    *   Image **height must be a multiple of 16 pixels**.
+    *   The `LineOffset` (stride) must be a multiple of 4 bytes.
+*   **Coefficient Limits:** The values for `a, b, d, e` must be between -1 and 1. The values for `c` and `f` (translation) can be much larger.
+*   **Cropping a Region (Page 11):** The hardware always processes a full image. If you only want to transform a weird-shaped part (e.g., a tilted rectangle), you must **transform the *entire larger image* that contains it** and then simply **ignore the parts you don't need** in the destination buffer (this is called cropping). The green areas in Figure 1-5 illustrate this.
+
+### **Summary: Your To-Do List**
+
+1.  **Prepare Your Images:** Make sure they are in memory, their dimensions meet the alignment rules, and you know their addresses and strides.
+2.  **Calculate Coefficients:** Use math (like `cos` and `sin`) to figure out your six `a, b, c, d, e, f` values for the transformation you want. Remember to adjust them if you're processing a UV plane.
+3.  **Write the Code:**
+    *   `open()` the affine engine.
+    *   Fill the `TRIGGER_PARAM` structure with all the information from steps 1 and 2.
+    *   `trigger()` the job.
+    *   `close()` the engine.
+4.  **Use the Result:** Your transformed image will now be sitting at the destination memory address you specified.
+
+This hardware is a powerful tool for image manipulation. By understanding the concepts of the transformation matrix, interpolation, and the specific API calls, you can effectively use it in your project.
