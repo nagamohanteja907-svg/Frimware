@@ -1,0 +1,98 @@
+Of course. This PDF is a comprehensive internal training document from NOVATEK, a semiconductor company, explaining how to use the Linux `perf` tool to analyze and optimize the performance of their systems (likely their System-on-a-Chip or SoC products).
+
+Let's break it down step-by-step, from foundational concepts to advanced usage.
+
+### High-Level Summary
+
+The document teaches engineers how to use `perf` to find **performance bottlenecks** in a Linux system. A bottleneck is the part of the system that is slowing everything else down (e.g., a function using too much CPU, a process waiting too long to run, excessive memory cache misses).
+
+The core workflow is:
+1.  **Record** system activity (`perf record`).
+2.  **Analyze** the recorded data to find the bottleneck (`perf report`, `perf top`).
+3.  **Visualize** the analysis for easier understanding (Flame Graph).
+
+---
+
+### Detailed, Step-by-Step Explanation
+
+#### 1. What is `perf`? (Pages 3-5)
+
+*   **`perf` vs. Oprofile**: `perf` (Performance Counters for Linux) is the modern, community-standard tool for performance analysis in Linux. It's what you should use.
+*   **How it works**: `perf` works by **sampling**. It periodically takes a "snapshot" of what the CPU is doing (e.g., which function it is executing). After taking thousands of these snapshots per second, it can show you which functions appeared most often, meaning they consumed the most CPU time.
+*   **PMU (Performance Monitoring Unit - Page 4)**: This is the crucial hardware component inside the CPU that makes `perf` possible. It's a special unit that can count low-level hardware events like:
+    *   CPU cycles executed
+    *   Instructions retired
+    *   Cache misses (L1, L2, TLB)
+    *   Branch mispredictions
+    *   `perf` tells the PMU what to count and then reads the results.
+*   **PMU Configuration Error (Page 5)**: If the Linux kernel device tree (the hardware description file) is not configured correctly for the PMU, `perf` cannot access these hardware events. The example shows errors trying to monitor TLB (Translation Lookaside Buffer) events because the PMU wasn't set up properly.
+
+#### 2. Setting Up `perf` (Pages 6-10, 40)
+
+This section is very specific to NOVATEK's internal build system, but the general requirements are:
+*   **Kernel Configuration**: The Linux kernel must be compiled with support for performance events (`CONFIG_PERF_EVENTS=y`, `CONFIG_HW_PERF_EVENTS=y`) and, critically, with **debug symbols** (`CONFIG_DEBUG_INFO=y`). Debug symbols are what allow `perf` to translate memory addresses into human-readable function names like `memcpy()` instead of cryptic hex numbers like `0xabcdef0`.
+*   **Libraries**: Tools like `libunwind` are needed to "unwind" the call stack, which is essential for creating flame graphs (more on this later).
+*   **Stripping Binaries (Page 41)**: This is a **critical point**. For `perf` to analyze user-space applications (programs you write), those programs must **not** be stripped of their debug symbols during compilation. The command `NVT_BINARY_FILE_STRIP = no` ensures this.
+
+#### 3. Basic `perf` Commands (Pages 11-26)
+
+This is the practical heart of the document.
+
+*   **`perf list` (Page 11)**: Shows all available events you can monitor. They fall into three categories:
+    *   **Hardware Events**: From the PMU (e.g., `cpu-cycles`, `instructions`).
+    *   **Software Events**: Counted by the Linux kernel (e.g., `page-faults`, `context-switches`).
+    *   **Hardware Cache Events**: Also from the PMU, but more specific (e.g., `L1-dcache-load-misses`).
+*   **`perf top` (Page 13)**: Like the `top` command, but for performance events. It shows a real-time view of which functions are using the most CPU cycles. **Crucial Note (Page 14)**: The percentage is **not** overall CPU usage. It's the percentage of *samples* that were in that function. If `function_A` appears in 10% of the samples, it means approximately 10% of the CPU time was spent there.
+*   **`perf record` (Pages 15-17)**: This is how you capture data for later, detailed analysis. The most important flags:
+    *   `-F 99`: Sample at 99 Hz (99 times per second). You can increase this for more detail but it creates more overhead.
+    *   `-a`: Sample all CPUs.
+    *   `-p <PID>`: Sample only a specific Process ID.
+    *   `-g --call-graph dwarf`: The most important flag for deep analysis. This records the full **call stack** (the chain of function calls) for each sample. This is what enables flame graphs.
+*   **`perf report` (Pages 24-25)**: Analyzes the data file (`perf.data`) created by `perf record`. It presents an interactive, sorted list of functions and where they were called from. The `--sort` option lets you sort by different criteria (e.g., which shared library, which command).
+
+#### 4. Flame Graphs (Pages 27-35)
+
+This is a powerful **visualization** technique built on top of `perf` data.
+
+*   **What it is**: A flame graph is a visualization of stacked call stacks. The x-axis shows the stack profile alphabetically, and the y-axis shows stack depth. Each rectangle is a function. The width of a function shows how often it was present in the call stacks (i.e., how much CPU time it consumed, directly or indirectly).
+*   **How to create it**:
+    1.  `perf record -F 299 -ag --call-graph dwarf` (Record with call graphs)
+    2.  `perf script > perf.unfold` (Convert binary data to text)
+    3.  On a PC with the FlameGraph scripts: `./stackcollapse-perf.pl perf.unfold > perf.folded`
+    4.  `./flamegraph.pl perf.folded > perf.svg` (Create the SVG image)
+*   **How to read it (Page 29)**:
+    *   **Look for the widest bars**. The widest bar is your biggest bottleneck.
+    *   The function at the bottom is the one that was actually running on the CPU.
+    *   The functions above it are its parents (who called it).
+    *   **Example**: If `memcpy` is very wide, it means the system is spending a lot of time copying memory, which is a common bottleneck.
+*   **Zooming In (Page 33)**: You can click on any function in the SVG to zoom in and see only its call stack and children.
+
+#### 5. Scheduling Latency Analysis (Pages 36-38)
+
+This is about analyzing **when the CPU is *not* running your code**. Sometimes the bottleneck isn't computation but **waiting**.
+
+*   **Scheduling Latency**: The time between when a process becomes able to run (e.g., data arrives for it) and when the scheduler actually lets it run on the CPU.
+*   **How to analyze it**:
+    *   Enable `CONFIG_SCHED_TRACER` in the kernel.
+    *   `perf sched record -- sleep 20` (Record scheduler activity for 20 sec)
+    *   `perf sched latency --sort max` (Show a table of processes sorted by their maximum delay)
+*   **Why it matters (Page 38)**: High maximum latency (`max`) means a process might be stalled, leading to choppy audio, laggy video, or unresponsive applications. The "Max at" column tells you *when* this happened, so you can correlate it with other events.
+
+#### 6. SOP (Standard Operating Procedure - Pages 39-41)
+
+This is a concise checklist for engineers at NOVATEK to follow when performing analysis. It summarizes the entire document into a step-by-step guide:
+1.  Configure the kernel and build environment correctly.
+2.  Use `perf record` to capture data.
+3.  Use `perf report` to find the problematic function.
+4.  Use `perf annotate` (not shown in detail) to drill down to the exact assembly instructions within that function that are slow.
+
+### Simple Example Walkthrough
+
+Let's say you have a video player on a NOVATEK chip that is stuttering.
+
+1.  **Profile**: You run `perf record -F 99 -ag --call-graph dwarf -p $(pidof video_player)` for 60 seconds.
+2.  **Analyze**: You run `perf report`. The report shows that `memcpy` is the function with the highest overhead.
+3.  **Visualize**: You generate a flame graph. The flame graph shows that the wide `memcpy` is being called from a function named `decode_frame` inside the video decoder library.
+4.  **Conclusion**: The bottleneck is that the video decoder is doing too much memory copying for each frame. The solution isn't a faster CPU; the solution is to **optimize the video decoder** to use less copying (e.g., by using zero-copy techniques). You now know exactly which team (the video decoder team) needs to fix the problem and what the problem is.
+
+This document provides the tools and methodology to go from "the system is slow" to "this specific function is the cause, and here is the proof."
