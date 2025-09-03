@@ -1,0 +1,126 @@
+Of course. This is an excellent question. Let's break down this document step-by-step, from the very basics to the specific code example. Think of this as a guided tour.
+
+### 1. What is this Document?
+
+This is an **Application Note** for a software tool called an **Audio Library (AUDIOLIB)**. This specific library handles the **AAC audio codec**.
+
+*   **Novatek/NTK/NYK**: The company that makes the chip (System-on-a-Chip, or SoC) and this software library.
+*   **SoC**: "System on a Chip." It's a full computer system (processor, memory, etc.) built into a single chip. Think of it like the brain of a smart TV, digital camera, or other embedded device.
+*   **AAC Codec**: "Advanced Audio Coding." It's an algorithm used to **compress** (shrink) and **decompress** audio files. It's the same technology used for .m4a files, iTunes songs, YouTube videos, and more. Compression is crucial for saving storage space and bandwidth.
+    *   **Encode** = Compress (e.g., convert a raw PCM microphone recording into a small AAC file).
+    *   **Decode** = Decompress (e.g., play a small AAC file through the speaker).
+
+This document teaches a programmer how to use Novatek's provided library functions to add AAC encoding and decoding capabilities to their application that runs on a Novatek chip.
+
+---
+
+### 2. Key Features of the Library (Page 3)
+
+The library can:
+*   **Encode** raw audio into an AAC bitstream.
+*   **Decode** an AAC bitstream back into raw audio.
+*   Work with common **Sampling Frequencies** (how many audio samples per second), from 8 kHz (low quality, like a telephone) to 48 kHz (high quality, like a DVD).
+*   Handle **Stereo** (2-channel) audio.
+
+---
+
+### 3. The Heart of the Guide: The API Functions (Pages 3-4)
+
+An API (Application Programming Interface) is a set of functions (tools) that the library provides for you to use. This library has four main functions. The document shows their prototypes—essentially their names, what inputs they need, and what they give back.
+
+Let's translate them from "Programmer" to "English".
+
+#### Function 1: `audlib_aac_encode_init`
+*   **What it does:** Prepares the AAC *encoder* for use. You must call this *once* before you start encoding any audio. It's like turning on and warming up a machine before you put materials into it.
+*   **What it needs:** A pointer to a configuration structure (`p_encode_cfg`). This structure holds settings like sample rate, bitrate, number of channels, etc. You fill this out to tell the encoder how you want your audio compressed.
+*   **What it returns:** An integer (`INT32`). If it's `0`, it succeeded. If it's any other number, it failed (we'll see error codes later).
+
+#### Function 2: `audlib_aac_encode_one_frame`
+*   **What it does:** This is the main workhorse. It takes a chunk of raw audio data (a "frame") and compresses it into a chunk of AAC data.
+*   **Crucial Detail:** A "frame" is always **1024 audio samples per channel**. If you have stereo audio, one frame = 1024 samples for the left channel + 1024 samples for the right channel.
+*   **What it needs:**
+    1.  `p_encode_buf_info`: A pointer to a structure telling the function *where* to find the raw input audio and *where* to put the encoded output data.
+    2.  `p_return_info`: A pointer to a structure where the function will *write back* information, most importantly, the size of the encoded data it just produced.
+*   **What it returns:** An error code.
+    *   `0`: Success.
+    *   `1`: Failed to configure. (Init probably failed)
+    *   `2`: Failed to run. (Internal encoder error)
+    *   `3`: No input data was provided.
+    *   `4`: You forgot to call `encode_init` first!
+    *   `5`: Some other unknown error.
+
+#### Function 3: `audlib_aac_decode_init`
+*   **What it does:** Prepares the AAC *decoder* for use. You must call this *once* before you start decoding any audio.
+*   **What it needs:** A pointer to a configuration structure for decoding (`p_decode_cfg`).
+*   **What it returns:** An integer error code (`0` for success).
+
+#### Function 4: `audlib_aac_decode_one_frame`
+*   **What it does:** The opposite of `encode_one_frame`. It takes a chunk of AAC data and decompresses it back into raw audio.
+*   **What it needs:**
+    1.  `p_decode_buf_info`: A pointer to a structure telling the function *where* to find the AAC input data and *where* to put the decoded raw audio output.
+    2.  `p_return_info`: A pointer to a structure where the function will *write back* information, like the size of the decoded audio and how many *bytes* of the AAC input it consumed.
+*   **What it returns:** An error code, very similar to the encode function (`0` for success, `4` if you didn't init, etc.).
+
+---
+
+### 4. The Code Example: Step-by-Step Walkthrough (Pages 5-8)
+
+Now, let's see how these functions are used together in a real program. This example does a full cycle: it reads a raw audio file, encodes it to AAC, decodes it back to raw audio, and saves the result. It's like zipping a file and then unzipping it to make sure it works.
+
+#### **Step 0: Setup and Variable Declarations**
+The code first declares (creates) all the variables it will need.
+*   `aac_input`, `aac_output`, `aac_bitstream`: File paths for the input raw audio, the final output raw audio, and the temporary encoded AAC data.
+*   `channel`, `aac_samplerate`, `BitRate`: Configuration parameters (2 channels, 48kHz, 192 kbps).
+*   `aac_encode_cfg`, `aac_decode_cfg`: The configuration structures we will pass to the `_init` functions.
+*   `aac_encode_buf_info`, `aac_decode_buf_info`: The buffer information structures we will pass to the `_one_frame` functions.
+*   `aac_encode_rtn_size`, `aac_decode_rtn`: The structures where the `_one_frame` functions will give us return information.
+*   It then allocates memory (`malloc`) for three big buffers:
+    *   `uiaudaceRecBufAdr`: To hold the input raw audio data read from the file.
+    *   `uiaudacePlyBufAdr`: To hold the encoded AAC bitstream.
+    *   `uiaudaceOutBufAdr`: To hold the decoded raw audio output.
+*   Finally, it reads the input audio file (`testcode_read_file`) into the first buffer.
+
+#### **Step 1: Encoding (Turning PCM into AAC)**
+1.  **Configure:** It fills the `aac_encode_cfg` structure with the desired settings (48kHz, stereo, 192kbps bitrate).
+    ```c
+    aac_encode_cfg.sample_rate = aac_samplerate; // 48000
+    aac_encode_cfg.channel_number = channel;      // 2
+    aac_encode_cfg.encode_bit_rate = BitRate;     // 192000
+    ```
+2.  **Initialize:** It calls `audlib_aac_encode_init(&aac_encode_cfg)` to start up the encoder.
+3.  **Calculate Frames:** It figures out how many "frames" of 1024 samples are in the input file. `proc = file_size / (2 * channel)` // Explanation: `file_size` is in bytes. Each audio sample is 2 bytes (16-bit audio). So, `file_size / 2` gives the total number of samples. Since it's stereo, total samples / 2 channels = number of sample pairs. `proc` now holds the total number of sample pairs (or "sample blocks").
+4.  **Encode Loop:** It loops until all sample pairs are processed.
+    *   It tells the encoder that the input buffer for this frame starts at `buf_in` and is `1024 * channel` samples long.
+    *   It tells the encoder to put the output AAC data for this frame at the end of the AAC buffer (`buf_bsout + EncodeSize`). `EncodeSize` starts at 0 and grows with each frame.
+    *   It calls `audlib_aac_encode_one_frame(...)`.
+    *   If successful, it adds the size of the new AAC data (`aac_encode_rtn_size.output_size`) to `EncodeSize`.
+    *   It moves the input pointer forward by 1024 samples for the next loop iteration and reduces the remaining sample count (`Proc`).
+5.  **Save:** After the loop, it writes the entire AAC bitstream buffer to a file (`testcode_write_file`).
+
+#### **Step 2: Decoding (Turning AAC back into PCM)**
+1.  **Configure & Initialize:** It sets up the decode configuration (sample rate, channels) and calls `audlib_aac_decode_init(&aac_decode_cfg)`.
+2.  **Decode Loop:** It loops until all the AAC bytes we just encoded (`EncodeSize`) are processed.
+    *   It tells the decoder where the AAC data is (`buf_bsout + Proc`) and how much is left to process.
+    *   It tells the decoder where to put the decoded raw audio (`buf_out + Decodesize`).
+    *   It calls `audlib_aac_decode_one_frame(...)`.
+    *   The critical part here is `Proc += aac_decode_rtn.one_frame_consume_bytes`. The decoder tells us how many *bytes* of the AAC input it used to decode one frame. We use this to move the AAC input pointer forward for the next loop. This is different from encoding, where we knew the input size was always 1024 samples.
+    *   It calculates the size of the decoded audio: `output_size * channel_number * 2` (number of samples * number of channels * 2 bytes per sample) and adds it to `Decodesize`.
+3.  **Save:** After the loop, it writes the entire decoded raw audio buffer to a file.
+
+#### **Final Result**
+The program prints out the sizes: the compressed AAC data (`EncodeSize`) is much smaller than the original raw audio (`file_size`), and the final decoded audio (`Decodesize`) should be almost exactly the same size as the original input, proving the codec worked correctly (though there will be some minor quality loss due to compression).
+
+### Summary & How to Use It
+
+To use this library in your own project on a Novatek chip:
+
+1.  **Include the Header:** `#include "audlib_aac.h"`
+2.  **Link the Library:** Your compiler needs to be told to include the actual pre-compiled library file (probably a `.a` or `.lib` file) that Novatek provides.
+3.  **Follow the Pattern:**
+    *   Declare your config, buffer, and return structures.
+    *   Call `_init()` once for either encode or decode.
+    *   In a loop, feed data into the `_one_frame()` function.
+    *   Use the information returned (output size, consumed bytes) to manage your buffers for the next loop iteration.
+4.  **Handle Errors:** Always check the return codes from the functions to debug problems.
+
+This document gives you all the necessary pieces to integrate AAC audio functionality into your device. The example code is your best starting point—it shows the correct flow and how to manage the memory buffers, which is often the trickiest part.
