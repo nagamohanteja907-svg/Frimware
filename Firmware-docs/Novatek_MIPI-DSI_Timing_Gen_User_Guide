@@ -1,0 +1,101 @@
+Of course. This is an excellent question. Since you have no prior knowledge, I will explain this step-by-step from the ground up. Think of this as a beginner's guide to configuring a display interface.
+
+This file is not a PDF; it's an **Excel spreadsheet** that acts as a **configuration tool and calculator** for engineers designing products with Novatek chips that drive displays.
+
+### **1. The Big Picture: What is This File For?**
+
+Imagine you have a chip (from Novatek) that needs to talk to a screen (an LCD panel). They don't speak the same language by default. This Excel file is like a **universal translator and rulebook** that helps you configure the chip to communicate perfectly with the screen.
+
+The communication standard they use is called **MIPI-DSI** (Mobile Industry Processor Interface - Display Serial Interface). It's the most common standard for connecting processors to displays in phones, tablets, smartwatches, etc.
+
+This tool does two main things:
+1.  **Calculates Timings:** It takes the screen's specifications and calculates all the precise digital timing parameters the Novatek chip needs to generate the correct video signal.
+2.  **Checks Compatibility:** It estimates whether the Novatek chip is powerful enough to drive a particular high-resolution screen at a desired frame rate.
+
+---
+
+### **2. Breakdown Sheet-by-Sheet**
+
+#### **Sheet 1: 修订历史 (Revision History)**
+This is simple. It just tracks the changes made to this document.
+*   **Version 1.00 (2021/01/12):** First version.
+*   **Version 1.01 (2024/01/15):** Updated some formulas and added a new feature ("DSI支持能力预估" - DSI Capability Estimation), which is Sheet 3.
+
+#### **Sheet 2: DSI参数配置工具 (DSI Parameter Configuration Tool)**
+This is the **main and most important sheet**. It's divided into several sections.
+
+**Color Coding:**
+*   **Orange Cells:** These are **INPUTS**. You must enter values here based on your specific LCD panel's datasheet.
+*   **Grey Cells:** These are **OUTPUTS/CALCULATIONS**. The spreadsheet automatically calculates these values based on your inputs. You don't touch these.
+
+**Section A: MIPI-DSI LCD信息 (LCD Information)**
+This is where you tell the tool about your screen's basic communication settings and physical layout.
+
+*   `DSI Data Lanes (C7)`: **Input (Orange)**. MIPI-DSI can send data over 1, 2, 3, or 4 "lanes" (like lanes on a highway). More lanes mean more data can be sent at once. A typical small display uses 2 lanes. You get this from the panel spec.
+    *   *Example: You type `2` here.*
+*   `DSI Operation Mode (C8)`: **Input (Orange)**. Sets the chip to "Video Mode" (`VDO_MODE`), which is the most common mode for continuously streaming video to a display.
+*   `DSI Packet Format (C9)`: **Input (Orange)**. Defines how the color data is packaged. `RGB888` is standard (8 bits for Red, 8 for Green, 8 for Blue = 24 bits total per pixel).
+*   `DSI Pixel Format (C10)`: **Calculation (Grey)**. The formula looks at C9 and calculates the bits per pixel (BPP). For `RGB888`, it correctly calculates `24`.
+*   `Horizontal active area (C12)`: **Input (Orange)**. The number of pixels in a single row of the visible image.
+    *   *Example: A common small display is 480 pixels wide. You type `480` here.*
+*   `HS low pulse width (C13)`, `Horizontal back porch (C14)`, `Horizontal front porch (C15)`: **Input (Orange)**. These are **blanking periods**. Think of a CRT monitor: the electron gun has to move from the end of one line back to the start of the next. This "flyback" time is hidden from the user and is divided into these periods.
+*   `Horizontal blanking period (C16)`: **Calculation (Grey)**. It sums up the blanking times: `=SUM(C13:C15) -> 10+60+60 = 130 pixels`.
+*   `Hsync period (C17)`: **Calculation (Grey)**. The total time for one line, including the visible part and the blanking: `=C12 + C16 -> 480 + 130 = 610 pixels`.
+
+The same logic applies to the **Vertical** parameters (C19-C25), but for lines (frames) instead of pixels (lines). `Vertical Refresh rate (C25)` is the frame rate (e.g., `60` Hz).
+
+**Section B: MIPI-DSI时钟频率 (Clock Frequencies)**
+This section takes all your inputs and calculates the required clock speeds.
+
+*   `Pixel Clock (G7)`: **Calculation (Grey)**. The master clock needed for this resolution and frame rate.
+    *   `=ROUND(C17 * C24 * C25 / 1000 / 1000, 2)`
+    *   `=ROUND(610 pixels/line * 690 lines/frame * 60 frames/sec / 1,000,000, 2)`
+    *   `=ROUND(25,254,000 / 1,000,000, 2) = 25.25 MHz`
+    *   This is the fundamental timing clock.
+*   `Bit Clock (G8)`: **Calculation (Grey)**. The total data rate needed on the MIPI lanes.
+    *   `=ROUND(G7 * C10 / C7, 2)`
+    *   `=ROUND(25.25 MHz * 24 bits/pixel / 2 lanes, 2)`
+    *   `=ROUND(303.00, 2) = 303.00 MHz`
+    *   This means the serial data interface must run at 303 Mbps per lane.
+*   `MIPI Clock (G10)`: **Calculation (Grey)**. The actual clock signal on the MIPI wire is half the Bit Clock (because data is sent on both the rising and falling edge of the clock).
+    *   `=ROUND(G8 / 2, 2) -> 303.00 / 2 = 151.50 MHz`
+
+**Section C: MIPI-DSI LCD参数设定 (LCD Parameter Settings)**
+This section mostly just mirrors your inputs into a format the Novatek software driver expects. The key calculation here is:
+
+*   `_IDE_FDCLK(Hz) (C32)`: This is a theoretical clock value used internally by the Novatek chip. The formula in the reference column (D32) is complex, but it's calculating the minimum clock speed the chip's internal engine needs to feed data to the MIPI transmitter based on your BPP and lane count. The tool ensures your input (60 MHz in this case) is greater than (`>`) the calculated value.
+
+**Section D: MIPI-DSI Timing参考 (Timing Reference)**
+This is the most advanced part. It translates the MIPI-DSI protocol parameters (from the panel spec or MIPI standard) into actual nanosecond times and checks if they are within valid limits.
+
+*   `UI (I47)`: **Calculation (Grey)**. "Unit Interval". The time for one single bit on the MIPI line. It's the inverse of the Bit Clock.
+    *   `=1000 / C32 -> 1000 / 303 Mbps ≈ 3.3 ns`. This is the fundamental unit of time for all MIPI signals.
+*   `TLPX (I49)`, `THS-PREPARE (I50)`, etc.: These are **MIPI-DSI protocol timing parameters**. They are defined in the MIPI specification. The "设定值 (Set Value)" column calculates the actual time in nanoseconds based on the configuration IDs (e.g., `DSI_CONFIG_ID_TLPX (C47)`) you type in.
+    *   *Example: `TLPX (C47)` is set to `3`. The time is calculated as `=ROUND(10^3/60*(C47+1),2)`. Let's break that down:*
+    *   `10^3/60` is `1000/303 MHz ≈ 3.3 ns` (our UI from before).
+    *   `C47+1` is `3+1=4`.
+    *   `So 3.3 ns * 4 = 13.2 ns`. This is the time for the LP->HS transition delay.
+*   The **Min** and **Max** columns check if the calculated time meets the strict requirements of the MIPI-DSI standard. The engineer must adjust the configuration IDs (C47-C61) until all calculated times fall within the min/max bounds.
+
+#### **Sheet 3: DSI支持能力预估 (DSI Capability Estimation)**
+This sheet answers the question: **"Can my Novatek chip drive this giant, high-resolution screen?"**
+
+*   `平台 (Platform) (C2)`: You select the Novatek chip model (e.g., `NT9869x`).
+*   `最大高速速率 (Max High-Speed Rate) (E3)`: **Calculation (Grey)**. It looks up the maximum possible bitrate *per lane* for the selected chip. For the NT9869x, it's `2.5` Gbps/lane.
+*   The table (Rows 6-11) lists common high-resolution formats. The key column is:
+*   `预估bitrate(Gbps) (H6)`: **Calculation (Grey)**. It estimates the total bitrate required for that screen.
+    *   `=ROUND( Width * Height * FPS * bits * (1 + Blanking%) / Lanes / 1e9, 2)`
+    *   *Example for 4K@30fps (Row 8):*
+    *   `=ROUND(3840 * 2160 * 30 * 16 * (1+0.2) / 4 / 1e9, 2)`
+    *   `=ROUND( ~4.78 Gbps, 2)`
+*   `支持 (Supported?) (I6)`: This is a **MANUAL CHECK**. The engineer must compare the calculated bitrate in column H (`4.78 Gbps`) with the chip's total capability. The NT9869x has 4 lanes, each capable of 2.5 Gbps, so `4 * 2.5 = 10 Gbps` total. Since `4.78 < 10`, this configuration is **supported**. You would type "Yes" or mark it somehow. If the calculated value was higher than the chip's capability, it would be "No".
+
+### **Summary & How to Use It**
+
+1.  **Get Your LCD Datasheet.**
+2.  **Go to Sheet 2.** Find all the parameters in the **orange cells** (like resolution, porch values, frame rate, number of data lanes, packet format) and type them in.
+3.  **Observe the Calculations.** The grey cells will instantly update, giving you the required clock speeds (`Pixel Clock`, `Bit Clock`).
+4.  **Check MIPI Timings.** In the bottom-right table, input the MIPI timing parameters from your panel's datasheet into the "设定值" column (C47-C61). The tool will calculate the times and show the min/max limits. Adjust the values until your "设定值(ns)" is within the valid range.
+5.  **Check Chip Capability (Sheet 3).** If you are using a high-res screen, go to Sheet 3. Select your chip, and see if your required resolution/frame rate is supported by comparing the calculated bitrate with the chip's max bitrate.
+
+This tool automates all the complex math and prevents human error, ensuring the display will work correctly when the engineer writes the final configuration code for the Novatek chip.
