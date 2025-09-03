@@ -1,0 +1,115 @@
+Of course. This document is a technical guide from a company called **NOVATEK** for developers working on their embedded system chips. Think of it as an instruction manual for setting up the "hard drive" (the filesystem) on a very specialized computer (their chip).
+
+Since you have no prior knowledge, let's break this down step-by-step with simple analogies.
+
+### High-Level Summary: What is this document?
+
+This guide explains how to set up different types of **filesystems** on NOVATEK's microchips. These chips are used in devices like security cameras, dashcams, smart displays, etc.
+
+A **filesystem** is the method and structure an operating system (like Linux, which runs on these chips) uses to store, organize, and manage files on a storage device (like a flash memory chip - similar to the SD card in your phone but soldered onto the board).
+
+The document covers four main filesystem types:
+1.  **UBIFS**: The modern, recommended default for flash storage. It's smart and handles bad memory blocks well.
+2.  **SquashFS**: A read-only, compressed filesystem. Good for saving space on things that don't need to change.
+3.  **JFFS2**: An older filesystem for flash memory, still used in some cases.
+4.  **YAFFS2**: Another flash filesystem, designed specifically for NAND flash.
+
+The guide provides the "recipes" or commands to build the software images for these filesystems and load them onto the chip.
+
+---
+
+### Detailed, Step-by-Step Explanation
+
+Let's go through the key sections of the document as if we're following a recipe.
+
+#### **Page 1-7: Cover Pages, Legal Stuff, and Table of Contents**
+*   **What's going on:** These are the introduction and legal disclaimers. The most useful part here is the **Revision History** (Page 3) and the **Table of Contents** (Page 4-5).
+*   **Why it matters:** The Revision History tells us which new chips were added in this version of the guide (e.g., NT98538A). The Table of Contents shows us the structure of the guide.
+
+#### **Page 8: Related Chips**
+*   **What's going on:** This is a list of all NOVATEK chip models that this guide applies to (e.g., NT98690, NT98525, etc.).
+*   **Why it matters:** You must check if your specific chip model is on this list before following the instructions.
+
+#### **Page 9-15: UBIFS (Unsorted Block Image File System) - The Main Event**
+
+This is the most detailed section because it's the default and recommended choice.
+
+*   **2.1 UBIFS Introduction:** This explains what UBIFS is. It's like a sophisticated librarian for a library (the flash memory) that has some damaged books (bad blocks). It knows how to work around the damage, find books quickly, and compress them to save space.
+*   **2.2 Linux menuconfig setting:** This shows how to "turn on" the UBIFS features in the Linux kernel before you compile it. It's like enabling specific options in a car's manufacturing software before the car is built.
+    *   *Example:* You must go into the kernel configuration menu and enable `UBI - Unsorted block images` and `UBIFS file system support`.
+*   **2.3 Rootfs using UBI:** The "rootfs" (root filesystem) is the main partition of the storage, like the C: drive on Windows. This step tells the build system to make the rootfs in the UBIFS format. You do this by setting a variable in a configuration file: `NVT_ROOTFS_TYPE = "NVT_ROOTFS_TYPE_NAND_UBI";`
+*   **2.4 Auto build UBIFS image:** This is the **automatic recipe**. You don't need to run commands manually. Instead, you edit a file called `mtd_cfg.txt` with the specifications of your flash memory chip, and then the build system runs the commands for you.
+    *   **Crucial Step:** You **must** define parameters like:
+        *   `ROOTFS_UBI_PAGE_SIZE`: The size of a "page" on the flash chip (e.g., 2048 bytes).
+        *   `ROOTFS_UBI_BLK_SIZE`: The size of an "erase block" (e.g., 128 KiB).
+        *   `ROOTFS_UBI_MAX_LEB_COUNT`: The number of logical blocks available for the filesystem. This is calculated using a provided Python script (`ubi_max_leb.py`) based on the partition size you defined elsewhere.
+*   **2.5 Build UBIFS image by yourself:** This is the **manual recipe**. It shows you the exact commands to run if you want to build the image manually, without the automated build system. This is very useful for debugging or learning.
+    1.  **`mkfs.ubifs`**: This command takes a folder on your computer (e.g., `rootfs.tmp`) and creates a compressed UBIFS image file from it. You must provide the page size, block size, and the calculated LEB count.
+        *   *Example Command:* `mkfs.ubifs -x lzo -m 2048 -e 126976 -c 260 -o rootfs.ubifs.img -r rootfs.tmp`
+    2.  **`ubinize`**: The UBIFS image from step 1 isn't ready to be written directly to raw flash. `ubinize` wraps it into a **UBI image**, which includes headers that help manage the flash (handling bad blocks, wear leveling). It needs a config file.
+        *   *Example Command:* `ubinize -m 2048 -p 128KiB -o rootfs.ubi.img ubinize.cfg`
+    3.  **Add checksum:** Finally, a NOVATEK-specific tool adds a checksum header so the bootloader can verify the image is valid before trying to use it.
+
+#### **Page 16-21: SquashFS**
+
+*   **What's going on:** SquashFS is a compressed, read-only filesystem. It's like a ZIP file that the operating system can read directly without unpacking. It's great for parts of the system that never change (like the main OS applications) because it saves a lot of space.
+*   **Two Types:**
+    1.  **On UBI (Obsolete):** An old method that put SquashFS inside a UBI volume. Not recommended.
+    2.  **Without UBI (New):** The new method where SquashFS is written directly to the flash partition, and the Linux driver itself handles skipping bad blocks.
+*   **Key Steps:** It involves similar configuration: enabling kernel support, setting the filesystem type in `nvt-info.dtsi`, defining compression and block size in `mtd_cfg.txt`, and building the image with `mksquashfs`.
+
+#### **Page 22-25: JFFS2 (Journaling Flash File System 2)**
+
+*   **What's going on:** JFFS2 is an older, robust filesystem for flash memory. It's like a meticulous accountant that journals every change, which makes it safe from corruption if the power is lost, but it can be slower than UBIFS.
+*   **Key Steps:** The process is very similar to UBIFS: enable kernel support, set the config, and build the image with `mkfs.jffs2`.
+
+#### **Page 26-28: YAFFS2 (Yet Another Flash File System 2)**
+
+*   **What's going on:** YAFFS2 was designed specifically for NAND flash. It's a simpler, more direct approach than UBI/UBIFS. The document explains there are two ways to use it:
+    *   **In-band:** Stores its metadata inside the main data area. Requires reserving the last block.
+    *   **Out-of-band:** Uses the spare area of the NAND flash for metadata (this is more traditional but requires specific ECC support).
+*   **Key Steps:** It involves modifying the device tree (`dtsi` files) to define a new partition and using the `mkyaffs2` tool to create the image.
+
+#### **Page 29-32: FAQ (Frequently Asked Questions)**
+
+This is a very important troubleshooting section.
+
+*   **7.1 Changing Flash Layout:** Instructions for what to change if you use a flash chip with a different page size (e.g., 4KB instead of 2KB). You must update the settings in **multiple places** (bootstrap, device tree, `mtd_cfg.txt`, and the `ubi_max_leb.py` script) to keep everything consistent.
+*   **7.3 Updating images in Linux:** This shows how to manually update the filesystem on a running device using Linux command-line tools like `ubiformat`, `ubiattach`, and `ubiupdatevol`. This is extremely useful for developers during testing.
+    *   *Example:* To update a UBIFS volume on `mtd6`:
+        1.  `ubidetach -p /dev/mtd6` (Detach the old filesystem)
+        2.  `ubiformat /dev/mtd6` (Format the partition)
+        3.  `ubiattach -p /dev/mtd6` (Attach the empty partition to the UBI system)
+        4.  `ubimkvol /dev/ubi0 -N rootfs -s 50MiB` (Create a volume on it)
+        5.  `ubiupdatevol /dev/ubi0_0 /tmp/new_rootfs.ubifs.img` (Write the new image to the volume)
+
+### How to Start Working With It: A Practical Example
+
+**Scenario:** You need to build a firmware image with a UBIFS rootfs for a board with a NOVATEK NT98525 chip and a 128MB NAND flash chip (page size=2048 bytes, block size=128KB).
+
+1.  **Get the SDK:** You would have received a Linux Software Development Kit (SDK) from NOVATEK.
+2.  **Configure the Kernel:** Navigate to the kernel source in the SDK and run `make menuconfig`. Enable the options mentioned in **Section 2.2**.
+3.  **Set Filesystem Type:** Edit the file `configs/cfg_xxx/nvt-info.dtsi` and ensure the line reads: `NVT_ROOTFS_TYPE = "NVT_ROOTFS_TYPE_NAND_UBI";`
+4.  **Define Partition Layout:** In `configs/cfg_xxx/nvt-storage-partition.dtsi`, define the size of your `rootfs` partition. For example: `partition_rootfs { reg = <0x0 0x800000 0x0 0x6000000>; };` (This starts at 8MB and is 96MB large).
+5.  **Configure Flash Parameters:** Edit `configs/cfg_gen/mtd_cfg.txt` (or `BSP/root-fs/mtd_cfg.txt`). Set the key parameters for your flash:
+    ```bash
+    ROOTFS_UBI_SUB_PAGE_SIZE=2048
+    ROOTFS_UBI_PAGE_SIZE=2048
+    ROOTFS_UBI_ERASE_BLK_SIZE=126976  # (64 pages/block - 2) * 2048
+    ROOTFS_UBI_BLK_SIZE="128KiB"
+    ROOTFS_UBI_COMPRESS_MODE="lzo"
+    ```
+6.  **Calculate LEB Count:** Run the provided script to calculate how many logical blocks your 96MB partition has:
+    ```bash
+    cd BSP/root-fs/
+    python ubi_max_leb.py 0x6000000
+    ```
+    The script will output a number, e.g., `364`. You then set this in your `mtd_cfg.txt`: `ROOTFS_UBI_MAX_LEB_COUNT=364`
+7.  **Build:** From the root of the SDK, run the command `make all`. The build system will:
+    *   Compile the kernel and all software.
+    *   Package the `rootfs` folder into a UBIFS image using the parameters you provided.
+    *   Wrap it into a UBI image.
+    *   Combine it with the kernel, bootloader, etc., into a final firmware file (`nvt-rom.bin` or similar).
+8.  **Flash:** You can now flash the `nvt-rom.bin` file to your device using a hardware programmer or via USB/UART using the bootloader.
+
+This document is your essential reference for steps 2, 3, 5, and 6. Whenever you change the flash chip or want to use a different filesystem, you will come back to this guide.
