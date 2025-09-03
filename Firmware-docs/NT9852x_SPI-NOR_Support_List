@@ -1,0 +1,115 @@
+Of course. This is a technical document, but don't worry. I'll break it down into simple, step-by-step concepts. Think of it as a recipe for teaching a computer how to recognize and talk to a new type of memory chip.
+
+### High-Level Summary: What is this document about?
+
+This document is an **Application Note** from Novatek for their NT9852X/NT98528 series of processors (like a brain for a security camera or other smart device).
+
+*   **Problem:** These processors need to boot up from and store data on a **SPI-NOR Flash** memory chip (a small, common type of storage). Many different companies make these chips, and they don't all follow the exact same rules. Some have weird identification codes, making it hard for Novatek to pre-program support for every single one into their software.
+*   **Solution:** This guide teaches a developer how to manually **add support for a new, unsupported SPI-NOR flash chip** to the system software. It covers how to do this in three different parts of the software:
+    1.  **Loader:** The very first piece of code that runs when the device powers on. Its main job is to initialize the hardware and load the next stage.
+    2.  **U-Boot:** A second-stage "bootloader" that prepares the system more fully and then loads the main operating system.
+    3.  **Linux:** The main operating system itself.
+
+Now, let's go through it step-by-step.
+
+---
+
+### 1. The Core Concept: The JEDEC ID
+
+Every SPI-NOR flash chip has a unique **JEDEC ID**. It's like the chip's model number and manufacturer ID combined. The processor reads this ID to figure out what chip it's talking to.
+
+*   How it's read: The processor sends the command `0x9F` to the chip. In response, the chip sends back **3 bytes**:
+    1.  **Manufacturer ID** (e.g., `0xEF` for Winbond)
+    2.  **Device Type (Memory Type)** (e.g., `0x40`)
+    3.  **Capacity ID** (e.g., `0x18` for a 16 Megabit chip)
+*   The problem: Sometimes two different chips from different vendors have the *same* JEDEC ID, but they have different capabilities (this is called a **conflict** and is covered in Section 5). The standard Novatek software can't handle this, so we need to add custom code.
+
+---
+
+### 2. Adding Support in the LOADER (Section 2)
+
+The Loader is the most complex part because it does the initial detection. The solution here is to write a custom function, called a **callback function** or **hook**.
+
+#### Step-by-Step in Loader:
+
+1.  **Implement the Callback Function (`nor_identify`)**: You write a function that acts like a bouncer at a club. The Loader (the club owner) reads the JEDEC ID (the guest's ID card) and hands it to your bouncer to check.
+    *   **Input:** The 3 bytes of the JEDEC ID (`uiMfgID`, `uiTypeID`, `uiCapacityID`).
+    *   **Output:** A `TRUE` or `FALSE` (is this guest on the list?) and a filled-out `SPI_IDENTIFY` struct (what are this guest's privileges?).
+
+2.  **The `SPI_IDENTIFY` Struct:** This is where you tell the Loader the chip's capabilities. The most important parts are:
+    *   `uiFlashSize`: The total size of the chip in bytes (e.g., `16 << 20` means 16 Megabytes).
+    *   `uiQuadReadType`: Can the chip read data using 4 wires at once (Quad Read) for super speed? You must tell the loader *where* the "Quad Enable" (QE) bit is located in the chip's internal status register. Is it on **bit 6** (`SPI_QUAD_TYPE1`) or **bit 9** (`SPI_QUAD_TYPE2`)? You find this in the chip's datasheet.
+        *   **Example from PDF:** The W25Q16CL chip uses `SPI_QUAD_TYPE2` (QE bit is Status Register 9, see Figures 3a & 3b on page 8).
+
+3.  **Install the Callback:** In your main code, you must register your custom bouncer function with the Loader using `flash_installIdentifyCB(nor_identify);`.
+
+4.  **Enable Quad Mode (if needed):** Even if your chip supports quad mode, you might need to explicitly enable it in your project's code with `flash_setConfig(FLASH_CFG_ID_SPI_SUPPORT_4BITS, TRUE);`. This is a safety feature because using 4-bit mode requires specific wiring on the circuit board.
+
+**Loader Example (From Page 10-11):**
+The code creates a small list (`nvt_nor_ids[]`) containing the details for a Winbond W25Q16CL chip (ID: `0xEF, 0x40, 0x18`). The `nor_identify` function checks if the read JEDEC ID matches any in this list. If it finds a match, it fills out the `pIdentify` struct with the chip's details (size, quad type) and returns `TRUE`. This tells the Loader, "Yes, I know this chip, here's how to use it."
+
+---
+
+### 3. Adding Support in U-BOOT (Section 3)
+
+U-Boot is simpler. Instead of a callback function, you just add an entry to a pre-defined **lookup table**.
+
+#### Step-by-Step in U-Boot:
+
+1.  **Find the Table:** Locate the file `u-boot/drivers/mtd/spi_flash/ext_flash_table.h`.
+2.  **Add an Entry:** You fill in a struct with your flash chip's information. The key fields are:
+    *   `"Flash_name"`: A human-readable name.
+    *   `jedec_id`: The combined JEDEC ID (e.g., `0xEF4018` for Mfg=`EF`, Type=`40`, Capacity=`18`).
+    *   `sector_size`: Usually `64 * 1024` (64 KB).
+    *   `nr_sectors`: Total size / sector_size (e.g., 16MB / 64KB = 256 sectors).
+    *   `rd_cmd`: What read command to use? `RD_EXTN` for 2-bit (Dual) read, `RD_FULL` for 4-bit (Quad) read.
+    *   `flags`: This is where you set the capabilities, like `SPI_FLASH_BUSWIDTH_QUAD_TYPE2`.
+
+**U-Boot Example (From Page 13):**
+The example shows how to add "W25Q128BV":
+`{"W25Q128BV", 0x1F4018, 0x0, 64 * 1024, 256, RD_FULL, SPI_FLASH_BUSWIDTH_QUAD_TYPE2}`
+
+---
+
+### 4. Adding Support in LINUX (Section 4)
+
+The process in the Linux kernel is almost identical to U-Boot.
+
+#### Step-by-Step in Linux:
+
+1.  **Enable the Feature:** In the kernel configuration menu (`menuconfig`), you must enable `CONFIG_MTD_EXTERNAL_FLASH_TABLE`.
+2.  **Find the Table:** Locate the file `linux-kernel/drivers/mtd/spi_flash/ext_flash_table.h`.
+3.  **Add an Entry:** You use the `FLASHL_ID` macro to add your chip. The parameters are very similar to U-Boot: name, erase command, combined JEDEC ID, page size, sector size, total size, write mode, and read mode.
+
+**Linux Example (From Page 15):**
+The example shows the same Winbond chip for Linux:
+`FLASHL_ID("wb_W25Q128BV", 0xd8, 0x001840EF, 0x100, 0x10000, 0x1000000, WR_QPP, SPI_NOR_QUAD_READ)`
+
+---
+
+### 5. Understanding Conflicts (Section 5)
+
+This is a crucial warning section. It describes what happens when two different chips share the **same JEDEC ID** but have **different capabilities**.
+
+*   **Example Conflict 1: GD25Q256C vs GD25Q257D**
+    *   **Same ID:** `C8h 40h 19h`
+    *   **Different Capability:** Their **Quad Enable (QE)** bit is in a different place in the status register (one in bit 6, one in bit 9). You cannot enable quad mode for one without breaking the other.
+    *   **Solution:** The firmware must be built to only use these chips in **dual mode** (slower, 2-bit read), avoiding the quad mode problem entirely.
+
+*   **Example Conflict 2: MX25L12805D vs MX25L12835F**
+    *   **Same ID:** `C2h 40h 18h`
+    *   **Different Capability:** One chip only supports simple 1-bit communication, while the other supports fast 4-bit quad reads.
+    *   **Solution:** The firmware must be built to only use the slowest common denominator: **1-bit mode** for these chips.
+
+### How to Use This Guide Now: Your Action Plan
+
+1.  **Identify Your Chip:** Find the datasheet for your specific SPI-NOR flash chip (e.g., W25Q128JV).
+2.  **Get the JEDEC ID:** From the datasheet, find the manufacturer ID, memory type, and capacity ID. It will have a table showing the output of the `0x9F` command.
+3.  **Determine Capabilities:** Can it do Quad Read? If yes, is the QE bit in Status Register 6 (`SPI_QUAD_TYPE1`) or 9 (`SPI_QUAD_TYPE2`)? What is its total size? Sector size?
+4.  **Choose Your Level:** Are you modifying the Loader, U-Boot, or Linux kernel? You might need to do all three.
+5.  **Implement the Code:**
+    *   For **Loader**: Write your `nor_identify` callback function and install it, following the sample code.
+    *   For **U-Boot/Linux**: Add your chip's entry to the `ext_flash_table.h` file in the respective project, following the format of the examples.
+6.  **Check for Conflicts:** See if your chip's JEDEC ID matches any in the conflict list. If it does, you must follow the prescribed solution (e.g., disable quad mode).
+
+This document gives you the tools to make Novatek's processor work with almost any SPI-NOR flash chip on the market, even if it wasn't originally designed for it.
