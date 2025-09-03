@@ -1,0 +1,116 @@
+Of course. This document is a user guide from Novatek, the manufacturer of the NT9852x series of microprocessors (like a computer's brain for embedded devices). It explains how to add support for a new type of flash memory chip (SPI-NAND) to the software that runs on their processor.
+
+Let's break it down step-by-step, from the general concepts to the specific actions.
+
+### **High-Level Summary: What is this document about?**
+
+Imagine you are building a smart camera or a similar device using a Novatek NT9852x chip. This chip needs to store its operating system (like Linux) and data on a memory chip. This guide teaches you how to make the Novatek chip recognize and work with a *new* brand or model of memory chip that isn't already listed in its pre-built software.
+
+The process involves checking if the new memory chip is compatible and then adding its "profile" (like its ID and specifications) into the software at three different stages:
+1.  **Loader Phase:** The very first program that runs when the chip powers on. It's like the BIOS on a computer.
+2.  **U-Boot Phase:** A second-stage bootloader that prepares the system to load the main operating system.
+3.  **Linux Phase:** The main operating system itself.
+
+This document focuses heavily on the **Loader Phase**, which is the most critical.
+
+---
+
+### **Step-by-Step Deep Dive**
+
+#### **Step 1: Check if Your New Flash Memory Chip is Compatible**
+
+Before you even start coding, you must ensure the chip can work with the Novatek processor. The document outlines three key checks:
+
+**1. ECC Requirement (Error Correction Code):**
+*   **What it is:** Memory cells can sometimes flip bits (0 becomes 1 or vice versa). ECC is a mechanism to detect and correct these errors.
+*   **The Rule:** The Novatek chip has a limited ability to correct errors itself.
+    *   If your flash chip **has no built-in ECC**, the Novatek chip *must* handle it. The Novatek chip can only correct up to 8 bits per 544 bytes. If your flash chip's datasheet says it requires stronger ECC (e.g., "8-bit ECC per 512+32 bytes"), it is **NOT compatible** (Page 4, top example).
+    *   If your flash chip **has its own built-in ECC** (e.g., "on-die 4-bit ECC"), it is **compatible** (Page 5, example). The Novatek chip can let the flash chip handle the corrections.
+
+**2. Is it a 2-Plane Flash?**
+*   **What it is:** A "plane" is like an internal partition within the flash chip. Some chips have two planes that can be operated on simultaneously for faster write/erase speeds.
+*   **The Rule:** The Novatek driver expects a specific method for selecting which plane to use. It uses **bit 12 of the column address** to select the plane.
+*   **What to do:** You **MUST** check your flash chip's datasheet. Look for the "PROGRAM LOAD RANDOM DATA" command (often `84h`). The timing diagram must show that the plane select bit is at the position the driver expects (bit 12). If it's different, the flash will not work correctly, and you need to contact Novatek for help (Page 6).
+
+**3. Which Linux File System Can You Use?**
+*   The choice of file system (UBIFS vs. JFFS2) depends on your flash chip's capabilities.
+*   **UBIFS (Recommended):**
+    *   **Requires:** The ability to report the *exact number* of bit errors it finds (e.g., 1 bit error, 2 bit errors... up to 8). This allows the system to set a threshold (e.g., 6 errors) and move data *before* it becomes uncorrectable, extending the chip's life.
+    *   **Example 1 (Page 7):** A chip that only reports "good," "corrected," or "failed" is **not good** for UBIFS.
+    *   **Example 2 (Page 8):** A chip that has a "Bit Flip Count Detection" feature and can report 1-8 errors **is perfect** for UBIFS.
+*   **JFFS2 (Older):**
+    *   **Requires:** The ability to write to the "spare area" of a memory page *by itself*. Some chips (like Winbond and Toshiba) prohibit this. If your chip's datasheet says this is not allowed, you **cannot use JFFS2**.
+
+#### **Step 2: Add Your Flash Chip to the Support List (The Practical Part)**
+
+This is the core of the guide. You need to gather specific information from your flash chip's datasheet and create an entry for it in the software's database.
+
+**2.1. Gather Information from the Datasheet:**
+*   **Manufacturer ID & Device ID (Page 9):** A unique number pair that identifies the chip. Found using the `9Fh` READ ID command.
+    *   *Example: Macronix (MXIC) ID is `0xC2`. A 1Gb chip might have a device ID of `0x12`.*
+*   **Page Size (Page 9):** The size of a single page, usually 2048 (2KB) or 4096 (4KB) bytes. This is critical for the boot process.
+*   **Block Size (Page 10):** The smallest size that can be erased, usually 131072 (128KB) or 262144 (256KB) bytes.
+*   **Quad Enable (QE) Type (Page 10):** How to enable 4-bit (Quad) communication mode for faster data transfer. There are two main types:
+    *   **Type 1 (QE in Feature Register):** Very common. A specific bit (often bit 0) in a specific feature register (often `B0h`) must be set to 1 to enable Quad mode. (e.g., `SPINAND_QE_FEATURE2_B0H_BIT0_TYPE1`).
+    *   **Type 2 (No QE Bit):** The chip automatically uses Quad mode when it receives a Quad command. (e.g., `SPINAND_QE_NONE`).
+
+**2.2. Modify the Code:**
+Once you have the information, you add it to a table in the source code.
+
+**1. Locate and Edit the ID Table File (Page 11):**
+*   Find the file: `.\LibExt\LIBExt_src\Ctrl_Flow\nand_ids.c`
+*   Find the array `nvt_nand_ids[]`.
+*   Add a new line using the `SPI_ID_NAND()` macro with your information.
+
+    **Example from Page 15 (GD5F4GQ4XC):**
+    ```c
+    NAND_FLASH_DEV nvt_nand_ids[] = {
+        // manuID, devID, page size, block size,         QE type,                          plane type
+        SPI_ID_NAND(0xC8,  0x55,   2048,      0x20000,   SPINAND_QE_FEATURE2_B0H_BIT0_TYPE1, SPINAND_1_PLANE_TYPE),
+    };
+    ```
+    *   `0xC8`: Manufacturer ID (GigaDevice)
+    *   `0x55`: Device ID
+    *   `2048`: Page size is 2KB
+    *   `0x20000`: Block size is 128KB (131,072 bytes in hex)
+    *   `SPINAND_QE_FEATURE2_B0H_BIT0_TYPE1`: QE is enabled via bit 0 of the B0h feature register.
+    *   `SPINAND_1_PLANE_TYPE`: This is a single-plane flash.
+
+**2. Register Your Custom Table (Page 12):**
+*   Find the file: `\LibExt\LibExt_src\Ctrl_Flow\bl_func.c`
+*   Find the function `bl_flash_open()`.
+*   Uncomment the line that tells the system to use your custom identification function.
+    ```c
+    // User define SPI-NAND id table sample code
+    int_strg_obj->flash_setConfig(FLASH_CFG_ID_SPI_IDENTIFY_CB, (UINT32)nand_identify);
+    ```
+    This line makes the bootloader call your `nand_ids.c` table to identify the flash.
+
+**3. Enable Quad Mode in Hardware Config (Page 11):**
+*   Find the file: `Project\Model\Src\prj_main.c`
+*   Ensure the code is configured to use 4-bit mode. This tells the driver to *attempt* to use Quad commands.
+    ```c
+    #if (SPI_PINMUX_SETTING == SPI_PINMUX_4BITS)
+        strg_obj->flash_setConfig(FLASH_CFG_ID_SPI_SUPPORT_4BITS, TRUE);
+    #endif
+    ```
+
+#### **Step 3: Troubleshooting (Page 14)**
+
+If it doesn't work, the guide tells you to **double-check your work**:
+1.  **Re-read the datasheet!** The most common problem is entering wrong information. Is the Manufacturer ID correct? Is the Device ID correct? Did you get the page/block size right?
+2.  **Is the QE type correct?** If you set the wrong QE type, the communication will fail. If the chip expects a Quad command but isn't in Quad mode (or vice-versa), it won't respond correctly.
+
+The document provides a concrete example of troubleshooting a GigaDevice chip (`GD5F4GQ4XC`) where the user must confirm all these parameters.
+
+### **Overall Summary (In Simple Terms)**
+
+This guide is a recipe for teaching a Novatek processor how to talk to a new brand of flash memory chip.
+
+1.  **Check Compatibility:** First, make sure the new chip speaks a language the processor can understand (ECC, plane selection).
+2.  **Create an ID Card:** Get the chip's unique ID numbers and specifications from its datasheet.
+3.  **Add to the Address Book:** Put that ID card into the processor's software (`nand_ids.c`).
+4.  **Turn on the Feature:** Tell the software to look at your new address book (`bl_func.c`) and to try using the faster 4-line communication mode (`prj_main.c`).
+5.  **Test and Debug:** If it doesn't work, go back to step 2 and make sure you copied the information from the datasheet correctly.
+
+By following these steps, you can expand the list of supported memory chips for your device, giving you more flexibility and options in your design.
